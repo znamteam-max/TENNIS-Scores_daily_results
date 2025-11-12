@@ -138,3 +138,44 @@ De Minaur
 
 ### Почему не GitHub Actions как «хостинг»
 GH Actions не предназначён для постоянных заданий: есть лимиты по времени выполнения и биллингу. Используйте Fly/Render/Railway/VPS для постоянной работы бота.
+
+
+
+## Vercel (Webhooks + Cron)
+
+Архитектура под Vercel:
+- `/api/webhook` — FastAPI-приложение, принимает Telegram обновления (команды).
+- `/api/cron` — FastAPI-приложение, выполняется по **Vercel Cron** каждые 2 минуты и шлёт карточки по завершённым матчам.
+- Хранилище — **Vercel Postgres** (через `POSTGRES_URL`). Схема создаётся автоматически при первом запуске.
+
+### Шаги
+1) В Vercel импортируйте репозиторий → Framework «Other».  
+2) В Project → Settings → Environment Variables добавьте:
+   - `TELEGRAM_BOT_TOKEN` — токен Telegram-бота
+   - `WEBHOOK_SECRET` — секрет для проверки вебхука (любой сложный UUID)
+   - `POSTGRES_URL` — строка подключения к Vercel Postgres
+   - опционально: `TZ`, `POLL_SECONDS`, `DATA_SOURCE` (по умолчанию `sofascore`)
+3) В корне есть `vercel.json` с cron: `*/2 * * * *` вызывает `/api/cron`.
+4) Задеплойте проект (Vercel сам соберёт зависимости из `requirements.txt`).
+5) Пропишите webhook Telegram с секретом:
+   ```bash
+   curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "url": "https://<project>.vercel.app/api/webhook",
+       "secret_token": "<WEBHOOK_SECRET>"
+     }'
+   ```
+   Замените `<project>` и секрет.
+
+### Проверка
+- Напишите боту `/start` → получите справку.
+- `/watch Sinner, Rublev` → бот добавит игроков на сегодня.
+- Подождите завершения матчей или измените cron на `* * * * *` на время теста.
+
+### Ограничения Vercel
+- Постоянные бэкграунд-процессы на Vercel невозможны — поэтому используется cron каждые 2 мин.
+- Всплески трафика и длительные ответы — держите обработку webhook максимально быстрой.
+
+### Миграции БД
+- Схема создаётся автоматически (`ensure_schema()`), отдельный шаг миграции не требуется.
