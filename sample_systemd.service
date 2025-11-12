@@ -1,0 +1,14 @@
+[Unit]
+Description=Tennis Watch Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tennis-watch-bot
+ExecStart=/usr/bin/python -u bot.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/tennis-watch-bot/.env
+
+[Install]
+WantedBy=multi-user.target

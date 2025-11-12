@@ -1,0 +1,18 @@
+
+app = "tennis-watch-bot"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TZ = "Europe/Helsinki"
+  POLL_SECONDS = "75"
+  DATA_SOURCE = "sofascore"
+
+[[services]]
+  processes = ["app"]
+  internal_port = 8080
+  protocol = "tcp"
+  [[services.ports]]
+    port = 8080
