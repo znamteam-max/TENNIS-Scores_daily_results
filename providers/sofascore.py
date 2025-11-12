@@ -2,7 +2,7 @@ import httpx, asyncio, re
 from datetime import datetime, date
 from typing import Dict, Any, List, Optional, Tuple
 from unicodedata import normalize as uni_norm
-from ..config import HTTP_TIMEOUT
+from config import HTTP_TIMEOUT
 
 BASE = "https://api.sofascore.com/api/v1"
 
