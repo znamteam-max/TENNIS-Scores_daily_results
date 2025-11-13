@@ -1,9 +1,9 @@
 {
-  "functions": {
-    "api/**/*.py": {
-      "runtime": "python3.11"
-    }
-  },
+  "functions": { "api/**/*.py": { "runtime": "python3.11" } },
+  "routes": [
+    { "src": "/api/cron", "dest": "/api/cron.py" },
+    { "src": "/api/webhook", "dest": "/api/webhook.py" }
+  ],
   "crons": [
     { "path": "/api/cron", "schedule": "*/2 * * * *" }
   ]
