@@ -1,0 +1,14 @@
+name: Ping Vercel Cron
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # каждые 5 минут (минимум для GitHub Actions)
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Vercel cron endpoint
+        run: |
+          set -e
+          curl -fsS -m 20 "https://tennis-scores-daily-results.vercel.app/api/cron"
