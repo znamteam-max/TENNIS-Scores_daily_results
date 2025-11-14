@@ -1,56 +1,140 @@
-import os, json, datetime as dt
+# db_pg.py
+# Простая обёртка для Neon Postgres (переменная окружения POSTGRES_URL)
+# Таблицы: users, watches, player_names
+import os
+import psycopg
+import datetime as dt
+from typing import Iterable, Optional, Tuple, List
 
-# Пытаемся импортировать psycopg v3; если нет — fallback на psycopg2 под тем же именем
-try:
-    import psycopg  # v3
-except ModuleNotFoundError:  # fallback
-    import psycopg2 as psycopg  # type: ignore
-
-def _url() -> str:
-    url = os.getenv("POSTGRES_URL")
-    if not url:
-        raise RuntimeError("POSTGRES_URL is not set")
-    return url
+DSN = os.getenv("POSTGRES_URL")
+if not DSN:
+    raise RuntimeError("POSTGRES_URL is not set")
 
 def _conn():
-    # и для v3, и для psycopg2 имя функции одинаковое
-    return psycopg.connect(_url())
+    # autocommit=True — чтобы не возиться с транзакциями для простых upsert'ов
+    return psycopg.connect(DSN, autocommit=True)
 
 def ensure_schema() -> None:
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("""
-            create table if not exists schedule_cache(
-                d date primary key,
-                payload jsonb not null,
-                updated_at timestamptz not null default now()
-            );
-            """)
-        con.commit()
+    """Создаёт таблицы, если их ещё нет."""
+    ddl = """
+    create table if not exists users(
+        chat_id     bigint primary key,
+        tz          text not null default 'Europe/Helsinki',
+        created_at  timestamptz not null default now()
+    );
 
-def cache_schedule(d: dt.date, events: list[dict]) -> None:
-    # храним как json-строку чтобы не упираться в адаптеры
-    payload = json.dumps(events, ensure_ascii=False)
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("""
-                insert into schedule_cache(d, payload, updated_at)
-                values (%s, %s, now())
-                on conflict (d) do update
-                set payload = excluded.payload,
-                    updated_at = now();
-            """, (d, payload))
-        con.commit()
+    create table if not exists player_names(
+        -- каноничное английское имя игрока
+        name_en     text primary key,
+        -- как мы хотим писать на русском
+        name_ru     text
+    );
 
-def read_schedule(d: dt.date) -> list[dict]:
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("select payload from schedule_cache where d = %s", (d,))
-            row = cur.fetchone()
-    if not row or not row[0]:
-        return []
-    # row[0] — строка JSON
-    try:
-        return json.loads(row[0])
-    except Exception:
-        return []
+    create table if not exists watches(
+        chat_id     bigint not null references users(chat_id) on delete cascade,
+        day         date   not null,
+        name_en     text   not null,
+        name_ru     text,
+        created_at  timestamptz not null default now(),
+        -- одно наблюдение на игрока в конкретный день
+        constraint watches_pk primary key (chat_id, day, name_en)
+    );
+
+    create index if not exists watches_day_idx on watches(day);
+    """
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(ddl)
+
+def ensure_user(chat_id: int, tz: Optional[str] = None) -> None:
+    """Гарантируем наличие пользователя в таблице users."""
+    with _conn() as con, con.cursor() as cur:
+        if tz:
+            cur.execute(
+                """
+                insert into users(chat_id, tz) values (%s, %s)
+                on conflict (chat_id) do update set tz = excluded.tz
+                """,
+                (chat_id, tz),
+            )
+        else:
+            cur.execute(
+                "insert into users(chat_id) values (%s) on conflict (chat_id) do nothing",
+                (chat_id,),
+            )
+
+# ---------- Словарь имён игроков (EN <-> RU) ----------
+
+def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
+    """Сохранить/обновить русскую запись для игрока."""
+    name_en = name_en.strip()
+    name_ru = name_ru.strip() if name_ru else None
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            insert into player_names(name_en, name_ru)
+            values (%s, %s)
+            on conflict (name_en) do update set name_ru = excluded.name_ru
+            """,
+            (name_en, name_ru),
+        )
+
+def get_player_ru(name_en: str) -> Optional[str]:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            "select name_ru from player_names where lower(name_en)=lower(%s)",
+            (name_en,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+# ---------- Watch-лист на день ----------
+
+def add_watches(chat_id: int, day: dt.date, names_en: Iterable[str]) -> int:
+    """Добавить нескольких игроков в наблюдение на конкретный день.
+    Возвращает количество добавленных/обновлённых записей.
+    """
+    ensure_user(chat_id)
+    added = 0
+    with _conn() as con, con.cursor() as cur:
+        for raw in names_en:
+            name_en = raw.strip()
+            if not name_en:
+                continue
+            name_ru = get_player_ru(name_en)
+            cur.execute(
+                """
+                insert into watches(chat_id, day, name_en, name_ru)
+                values (%s, %s, %s, %s)
+                on conflict (chat_id, day, name_en) do update
+                    set name_ru = coalesce(excluded.name_ru, watches.name_ru)
+                """,
+                (chat_id, day, name_en, name_ru),
+            )
+            added += 1
+    return added
+
+def list_watches(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
+    """Список наблюдений на день: [(name_en, name_ru), ...]"""
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            select name_en, name_ru
+            from watches
+            where chat_id = %s and day = %s
+            order by lower(name_en)
+            """,
+            (chat_id, day),
+        )
+        return [(r[0], r[1]) for r in cur.fetchall()]
+
+def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
+    """Удалить игрока из наблюдения на день. Возвращает число удалённых строк (0/1)."""
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            delete from watches
+            where chat_id = %s and day = %s and lower(name_en) = lower(%s)
+            """,
+            (chat_id, day, name_en.strip()),
+        )
+        return cur.rowcount
