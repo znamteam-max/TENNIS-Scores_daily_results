@@ -21,15 +21,11 @@ from db_pg import (
 from tg_api import send_message, answer_callback_query
 from providers import sofascore as ss
 
-# Проверка секрета от Telegram (SetWebhook ...&secret_token=...)
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 app = FastAPI()
 
-# --- ленивое создание схемы БД (чтобы не держать коннект на холодном старте) ---
 _schema_ready = False
-
-
 def _ensure_schema_safe() -> None:
     global _schema_ready
     if _schema_ready:
@@ -40,23 +36,18 @@ def _ensure_schema_safe() -> None:
     except Exception:
         _schema_ready = False
 
-
-# --- утилиты времени/парсинга ---
 def _today_local(chat_id: int) -> date:
-    tzname = get_tz(chat_id)  # хранится в БД, дефолт задаётся в ensure_user()
+    tzname = get_tz(chat_id)
     tz = ZoneInfo(tzname)
     return datetime.now(tz).date()
-
 
 def _parse_names(text: str) -> List[str]:
     parts = [p.strip() for p in (text or "").split(",")]
     return [p for p in parts if p]
 
-
 def _client() -> httpx.AsyncClient:
     """
-    Пытаемся использовать HTTP/2 (если установлен h2),
-    иначе корректно откатываемся на HTTP/1.1.
+    Пытаемся HTTP/2 (если установлен h2), иначе — fallback на HTTP/1.1.
     """
     common = dict(
         headers=ss.DEFAULT_HEADERS,
@@ -64,12 +55,11 @@ def _client() -> httpx.AsyncClient:
         timeout=20.0,
     )
     try:
-        import h2  # noqa: F401  # просто проверка наличия
+        import h2  # noqa: F401
         return httpx.AsyncClient(http2=True, **common)
     except Exception:
         return httpx.AsyncClient(**common)
 
-# --- технические проверки (GET) на всех вариантах пути ---
 @app.get("")
 @app.get("/")
 @app.get("/api/webhook")
@@ -78,18 +68,17 @@ def ping():
     _ensure_schema_safe()
     return {"ok": True, "service": "webhook"}
 
-
-# --- меню турниров/матчей ---
 async def _send_tournaments_menu(chat_id: int) -> None:
     _ensure_schema_safe()
     try:
         async with _client() as client:
+            # ⚠️ внутри events_by_date уже есть мульти-фоллбек (api. → www. → live)
             events = await ss.events_by_date(client, _today_local(chat_id))
     except httpx.HTTPStatusError as e:
         await send_message(
             chat_id,
             "Источник Sofascore вернул ошибку доступа (403). "
-            "Это временная защита. Попробуйте /start ещё раз через пару минут.\n\n"
+            "Это их временная защита. Попробуйте /start ещё раз через пару минут.\n\n"
             f"TECH: {e.response.status_code} {e.request.url}",
         )
         return
@@ -106,16 +95,11 @@ async def _send_tournaments_menu(chat_id: int) -> None:
     keyboard = []
     for i, t in enumerate(tours, 1):
         lines.append(f"{i}) {t['name']}")
-        keyboard.append(
-            [
-                {
-                    "text": f"{i}) {t['name']}",
-                    "callback_data": f"tour:{t['id']}",
-                }
-            ]
-        )
+        keyboard.append([{
+            "text": f"{i}) {t['name']}",
+            "callback_data": f"tour:{t['id']}",
+        }])
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
-
 
 async def _send_matches_menu(chat_id: int, tour_id: str) -> None:
     _ensure_schema_safe()
@@ -126,7 +110,7 @@ async def _send_matches_menu(chat_id: int, tour_id: str) -> None:
         await send_message(
             chat_id,
             "Источник Sofascore вернул ошибку доступа (403). "
-            "Это временная защита. Попробуйте /start ещё раз через пару минут.\n\n"
+            "Это их временная защита. Попробуйте /start ещё раз через пару минут.\n\n"
             f"TECH: {e.response.status_code} {e.request.url}",
         )
         return
@@ -147,27 +131,17 @@ async def _send_matches_menu(chat_id: int, tour_id: str) -> None:
         hn = (ev.get("homeTeam") or {}).get("name", "—")
         an = (ev.get("awayTeam") or {}).get("name", "—")
         lines.append(f"• {hn} — {an}")
-        keyboard.append(
-            [
-                {
-                    "text": f"Следить: {hn} — {an}",
-                    "callback_data": f"watch_ev:{eid}",
-                }
-            ]
-        )
+        keyboard.append([{
+            "text": f"Следить: {hn} — {an}",
+            "callback_data": f"watch_ev:{eid}",
+        }])
 
-    keyboard.append(
-        [
-            {
-                "text": "✅ Следить за ВСЕМИ матчами турнира",
-                "callback_data": f"watch_tour:{tour_id}",
-            }
-        ]
-    )
+    keyboard.append([{
+        "text": "✅ Следить за ВСЕМИ матчами турнира",
+        "callback_data": f"watch_tour:{tour_id}",
+    }])
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
-
-# --- основной обработчик вебхука ---
 @app.post("")
 @app.post("/")
 @app.post("/api/webhook")
@@ -175,19 +149,17 @@ async def _send_matches_menu(chat_id: int, tour_id: str) -> None:
 async def webhook(req: Request):
     _ensure_schema_safe()
 
-    # Проверяем секрет, если установлен
     if WEBHOOK_SECRET:
         token = req.headers.get("x-telegram-bot-api-secret-token")
         if token != WEBHOOK_SECRET:
             raise HTTPException(status_code=403, detail="Invalid secret")
 
-    # Пытаемся прочитать апдейт
     try:
         upd = await req.json()
     except Exception:
         return {"ok": True}
 
-    # --- CALLBACK-КНОПКИ ---
+    # --- CALLBACKS ---
     if "callback_query" in upd:
         cq = upd["callback_query"]
         cq_id = cq.get("id")
@@ -211,15 +183,18 @@ async def webhook(req: Request):
                 await send_message(chat_id, f"Не удалось найти матч.\nTECH: {e}")
                 return {"ok": True}
 
+            # де-дуп по регистру
+            today = _today_local(chat_id)
+            existing = {(lbl or "").lower() for (lbl, _res, _src) in list_today(chat_id, today)}
+
             ev = next((e for e in events if ss.event_id_of(e) == eid), None)
             if ev:
-                today = _today_local(chat_id)
                 hn = (ev.get("homeTeam") or {}).get("name", "")
                 an = (ev.get("awayTeam") or {}).get("name", "")
-                if hn:
-                    add_watch(chat_id, hn, "sofascore", today)
-                if an:
-                    add_watch(chat_id, an, "sofascore", today)
+                if hn and hn.lower() not in existing:
+                    add_watch(chat_id, hn, "sofascore", today); existing.add(hn.lower())
+                if an and an.lower() not in existing:
+                    add_watch(chat_id, an, "sofascore", today); existing.add(an.lower())
                 await send_message(chat_id, f"Добавил на сегодня: {hn} и {an}. /list")
             else:
                 await send_message(chat_id, "Матч уже недоступен.")
@@ -239,27 +214,26 @@ async def webhook(req: Request):
             tour = next((t for t in tours if t["id"] == tour_id), None)
             if tour:
                 today = _today_local(chat_id)
+                existing = {(lbl or "").lower() for (lbl, _res, _src) in list_today(chat_id, today)}
                 cnt = 0
-                seen = set()
                 for ev in tour["events"]:
                     for nm in [
                         (ev.get("homeTeam") or {}).get("name", ""),
-                        (ev.get("awayTeam") or {}).get("name", ""),
+                        (ev.get("awayTeam") or {}).get("name", "")
                     ]:
-                        if nm and nm not in seen:
+                        if nm and nm.lower() not in existing:
                             add_watch(chat_id, nm, "sofascore", today)
-                            seen.add(nm)
+                            existing.add(nm.lower())
                             cnt += 1
                 await send_message(chat_id, f"Добавил {cnt} игроков из турнира. /list")
             else:
                 await send_message(chat_id, "Турнир уже недоступен.")
             return {"ok": True}
 
-        # неизвестная кнопка
         await answer_callback_query(cq_id)
         return {"ok": True}
 
-    # --- ОБЫЧНЫЕ СООБЩЕНИЯ ---
+    # --- MESSAGES ---
     msg = upd.get("message") or upd.get("edited_message") or {}
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
@@ -279,7 +253,6 @@ async def webhook(req: Request):
             await send_message(chat_id, "Укажите TZ, например: /tz Europe/Helsinki")
         else:
             import zoneinfo
-
             tz = toks[1].strip()
             try:
                 _ = zoneinfo.ZoneInfo(tz)
@@ -292,9 +265,7 @@ async def webhook(req: Request):
     if text.startswith("/list"):
         rows = list_today(chat_id, _today_local(chat_id))
         if not rows:
-            await send_message(
-                chat_id, "На сегодня список пуст. Нажмите /start и выберите турнир."
-            )
+            await send_message(chat_id, "На сегодня список пуст. Нажмите /start и выберите турнир.")
         else:
             today = _today_local(chat_id).isoformat()
             lines = [f"Сегодня ({today}):"]
@@ -311,17 +282,17 @@ async def webhook(req: Request):
     if text.startswith("/watch"):
         toks = text.split(maxsplit=1)
         if len(toks) < 2:
-            await send_message(
-                chat_id, "Пример: /watch De Minaur, Musetti, Rublev"
-            )
+            await send_message(chat_id, "Пример: /watch De Minaur, Musetti, Rublev")
             return {"ok": True}
         names = _parse_names(toks[1])
         today = _today_local(chat_id)
+        existing = {(lbl or "").lower() for (lbl, _res, _src) in list_today(chat_id, today)}
         for n in names:
-            add_watch(chat_id, n, "sofascore", today)
+            if n and n.lower() not in existing:
+                add_watch(chat_id, n, "sofascore", today)
+                existing.add(n.lower())
         await send_message(chat_id, "Добавил. /list")
         return {"ok": True}
 
-    # неизвестная команда — покажем меню
     await _send_tournaments_menu(chat_id)
     return {"ok": True}
