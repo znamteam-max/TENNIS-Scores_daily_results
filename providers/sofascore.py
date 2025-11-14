@@ -1,98 +1,109 @@
 # providers/sofascore.py
 from __future__ import annotations
-from datetime import date
-from typing import List, Dict, Any
+import asyncio, time
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Tuple
+
 import httpx
 
+# максимально «браузерные» заголовки — помогают пройти 403
 DEFAULT_HEADERS = {
     "user-agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     ),
-    "accept": "*/*",
+    "accept": "application/json, text/plain, */*",
+    "accept-language": "ru,en;q=0.9",
+    "cache-control": "no-cache",
+    "pragma": "no-cache",
     "origin": "https://www.sofascore.com",
     "referer": "https://www.sofascore.com/",
 }
 
-API_DOMAINS = [
-    "https://api.sofascore.com",
-    "https://www.sofascore.com",
+BASES = [
+    "https://api.sofascore.com/api/v1",
+    "https://www.sofascore.com/api/v1",
 ]
 
-def _looks_low_category(name: str) -> bool:
-    # Отфильтруем ITF 15/25/50 и подобные (простая эвристика)
-    n = (name or "").lower()
-    return ("itf" in n and any(x in n for x in ("15", "25", "50"))) or any(
-        x in n for x in (" w15", " w25", " w50", " m15", " m25", " m50")
-    )
-
 async def _get_json(client: httpx.AsyncClient, url: str) -> Dict[str, Any]:
-    r = await client.get(url)
+    r = await client.get(url, headers=DEFAULT_HEADERS, timeout=20.0, follow_redirects=True)
     r.raise_for_status()
     return r.json()
 
-def event_id_of(ev: Dict[str, Any]) -> str:
-    # У Sofascore бывает несколько полей, но "id" события — стандартный
-    eid = ev.get("id")
-    return str(eid) if eid is not None else ""
+def _ds(d: date) -> str:
+    return d.isoformat()
 
-def _pretty_tour_name(ev: Dict[str, Any]) -> str:
+def event_id_of(ev: Dict[str, Any]) -> str:
+    # универсальный способ достать id
+    eid = ev.get("id") or ev.get("event", {}).get("id")
+    return str(eid)
+
+def _is_bad_category(ev: Dict[str, Any]) -> bool:
+    # отфильтровываем 15/25/50
+    cat = ((ev.get("tournament") or {}).get("category") or {}).get("id")
+    return cat in (15, 25, 50)
+
+def _tour_label(ev: Dict[str, Any]) -> Tuple[str, str]:
     t = ev.get("tournament") or {}
-    tname = t.get("name") or "Турнир"
-    # Отличим пары от одиночки
-    evname = (ev.get("name") or "").lower()
-    if "double" in evname or "doubles" in evname:
-        kind = "ПАРНЫЙ РАЗРЯД"
-    else:
-        kind = "ОДИНОЧНЫЙ РАЗРЯД"
-    # Категория: ATP/WTA/Challenger
-    cat = (t.get("category") or {}).get("name") or ""
-    cat_up = cat.upper() if cat else ""
-    prefix = "ATP" if "ATP" in cat_up else ("WTA" if "WTA" in cat_up else "ЧЕЛЛЕНДЖЕР МУЖЧИНЫ")
-    return f"{prefix} - {kind}: {tname}"
+    cat = t.get("category") or {}
+    # Примеры: "ATP - ОДИНОЧНЫЙ РАЗРЯД: Итоговый турнир - Турин"
+    cat_name = cat.get("name", "") or ""
+    tour_name = t.get("name", "") or ""
+    return (f"{cat_name} — {tour_name}", f"{cat.get('uniqueId','')}/{t.get('uniqueId','')}")
 
 def group_tournaments(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     buckets: Dict[str, Dict[str, Any]] = {}
     for ev in events:
-        t = ev.get("tournament") or {}
-        tid = str(t.get("id") or "")
-        tname = t.get("name") or "Турнир"
-        if not tid:
-            # fallback сгруппировать по имени
-            tid = f"name:{tname}"
-        if _looks_low_category(tname):
+        if _is_bad_category(ev):
             continue
-        key = tid
-        if key not in buckets:
-            buckets[key] = {"id": tid, "name": _pretty_tour_name(ev), "events": []}
-        buckets[key]["events"].append(ev)
+        label, tid = _tour_label(ev)
+        b = buckets.setdefault(tid, {"id": tid, "name": label, "events": []})
+        b["events"].append(ev)
+    return list(buckets.values())
 
-    # сортировка: покрупнее названия вверх
-    out = list(buckets.values())
-    out.sort(key=lambda x: x["name"])
-    return out
+def _from_ts(ts: int) -> datetime:
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
 
-async def events_by_date(client: httpx.AsyncClient, ds: date) -> List[Dict[str, Any]]:
-    ds_str = ds.isoformat()
-    last_error = None
-    for base in API_DOMAINS:
+def event_status(ev: Dict[str, Any]) -> Dict[str, Any]:
+    st = (ev.get("status") or {}).get("type")
+    start_ts = ev.get("startTimestamp")
+    start_dt = _from_ts(start_ts) if start_ts else None
+    home = (ev.get("homeTeam") or {}).get("name", "")
+    away = (ev.get("awayTeam") or {}).get("name", "")
+    score = ev.get("homeScore") or {}
+    ascore = ev.get("awayScore") or {}
+    # У Sofascore для тенниса set1/set2... + current
+    res = {
+        "state": st,              # NOT_STARTED / INPROGRESS / FINISHED / POSTPONED ...
+        "start": start_dt,
+        "home": home,
+        "away": away,
+        "score": {"home": score, "away": ascore},
+    }
+    return res
+
+async def _try_get(client: httpx.AsyncClient, path: str) -> Dict[str, Any]:
+    last_exc = None
+    for base in BASES:
         try:
-            data = await _get_json(client, f"{base}/api/v1/sport/tennis/scheduled-events/{ds_str}")
-            arr = data.get("events") or []
-            # Лёгкая фильтрация: только матчи (не квали и не отменённые, если поле есть)
-            events = []
-            for ev in arr:
-                t = ev.get("tournament") or {}
-                tname = t.get("name") or ""
-                if _looks_low_category(tname):
-                    continue
-                events.append(ev)
-            return events
+            return await _get_json(client, f"{base}{path}")
         except Exception as e:
-            last_error = e
-            continue
-    # Если вообще не получилось — прокинем последнюю
-    if last_error:
-        raise last_error
-    return []
+            last_exc = e
+            await asyncio.sleep(0.3)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("No sources")
+
+async def events_by_date(client: httpx.AsyncClient, d: date) -> List[Dict[str, Any]]:
+    # scheduled на день
+    data = await _try_get(client, f"/sport/tennis/scheduled-events/{_ds(d)}")
+    return data.get("events") or []
+
+async def events_live(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
+    data = await _try_get(client, "/sport/tennis/events/live")
+    return data.get("events") or []
+
+async def event_details(client: httpx.AsyncClient, event_id: str) -> Dict[str, Any]:
+    # на будущее (статистика после матча)
+    data = await _try_get(client, f"/event/{event_id}")
+    return data
