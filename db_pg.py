@@ -1,18 +1,23 @@
 # db_pg.py
-# Простая обёртка для Neon Postgres (переменная окружения POSTGRES_URL)
+# Neon Postgres обёртка (использует переменную окружения POSTGRES_URL)
 # Таблицы: users, watches, player_names
 import os
 import psycopg
 import datetime as dt
 from typing import Iterable, Optional, Tuple, List
+from zoneinfo import ZoneInfo
+
+DEFAULT_TZ = os.getenv("APP_TZ", "Europe/Helsinki")
 
 DSN = os.getenv("POSTGRES_URL")
 if not DSN:
     raise RuntimeError("POSTGRES_URL is not set")
 
 def _conn():
-    # autocommit=True — чтобы не возиться с транзакциями для простых upsert'ов
+    # autocommit=True — удобно для простых upsert'ов и DDL
     return psycopg.connect(DSN, autocommit=True)
+
+# ---------------- СХЕМА ----------------
 
 def ensure_schema() -> None:
     """Создаёт таблицы, если их ещё нет."""
@@ -26,7 +31,7 @@ def ensure_schema() -> None:
     create table if not exists player_names(
         -- каноничное английское имя игрока
         name_en     text primary key,
-        -- как мы хотим писать на русском
+        -- как писать на русском
         name_ru     text
     );
 
@@ -36,7 +41,6 @@ def ensure_schema() -> None:
         name_en     text   not null,
         name_ru     text,
         created_at  timestamptz not null default now(),
-        -- одно наблюдение на игрока в конкретный день
         constraint watches_pk primary key (chat_id, day, name_en)
     );
 
@@ -45,8 +49,10 @@ def ensure_schema() -> None:
     with _conn() as con, con.cursor() as cur:
         cur.execute(ddl)
 
+# --------------- USERS / TZ ----------------
+
 def ensure_user(chat_id: int, tz: Optional[str] = None) -> None:
-    """Гарантируем наличие пользователя в таблице users."""
+    """Гарантирует наличие пользователя; при переданном tz — обновляет его."""
     with _conn() as con, con.cursor() as cur:
         if tz:
             cur.execute(
@@ -62,7 +68,27 @@ def ensure_user(chat_id: int, tz: Optional[str] = None) -> None:
                 (chat_id,),
             )
 
-# ---------- Словарь имён игроков (EN <-> RU) ----------
+def get_tz(chat_id: int) -> str:
+    """Возвращает таймзону пользователя или DEFAULT_TZ, если пользователя ещё нет."""
+    with _conn() as con, con.cursor() as cur:
+        cur.execute("select tz from users where chat_id=%s", (chat_id,))
+        row = cur.fetchone()
+        return row[0] if row and row[0] else DEFAULT_TZ
+
+def set_tz(chat_id: int, tz: str) -> None:
+    """Устанавливает таймзону пользователю (создаёт пользователя при необходимости)."""
+    ensure_user(chat_id, tz=tz)
+
+def today_for_chat(chat_id: int) -> dt.date:
+    """Дата «сегодня» в таймзоне пользователя."""
+    tz = get_tz(chat_id)
+    try:
+        now_local = dt.datetime.now(ZoneInfo(tz))
+    except Exception:
+        now_local = dt.datetime.now(ZoneInfo(DEFAULT_TZ))
+    return now_local.date()
+
+# --------- СЛОВАРЬ ИМЁН ИГРОКОВ (EN <-> RU) ---------
 
 def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
     """Сохранить/обновить русскую запись для игрока."""
@@ -87,17 +113,17 @@ def get_player_ru(name_en: str) -> Optional[str]:
         row = cur.fetchone()
         return row[0] if row else None
 
-# ---------- Watch-лист на день ----------
+# ---------------- WATCH-ЛИСТ ----------------
 
 def add_watches(chat_id: int, day: dt.date, names_en: Iterable[str]) -> int:
-    """Добавить нескольких игроков в наблюдение на конкретный день.
+    """Добавить нескольких игроков в наблюдение на день.
     Возвращает количество добавленных/обновлённых записей.
     """
     ensure_user(chat_id)
     added = 0
     with _conn() as con, con.cursor() as cur:
         for raw in names_en:
-            name_en = raw.strip()
+            name_en = (raw or "").strip()
             if not name_en:
                 continue
             name_ru = get_player_ru(name_en)
