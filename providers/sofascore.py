@@ -1,123 +1,98 @@
-# providers/sofascore.py
-from __future__ import annotations
+import os
+import json
+import random
 import asyncio
-from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Tuple
-import json, httpx
+import datetime as dt
+import httpx
 
-DEFAULT_HEADERS = {
-    "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/124.0.0.0 Safari/537.36"),
-    "accept": "application/json, text/plain, */*",
-    "accept-language": "ru,en;q=0.9",
-    "origin": "https://www.sofascore.com",
-    "referer": "https://www.sofascore.com/",
-    "cache-control": "no-cache",
-    "pragma": "no-cache",
-}
-
-# основная + прокси-фолбэки (обход 403 challenge)
+# Два эндпоинта Sofascore — пробуем оба по очереди
 BASES = [
     "https://api.sofascore.com/api/v1",
     "https://www.sofascore.com/api/v1",
-    # r.jina.ai проксирует контент GET, отдаёт тот же JSON
-    "https://r.jina.ai/http://api.sofascore.com/api/v1",
-    "https://r.jina.ai/https://api.sofascore.com/api/v1",
 ]
 
-def _ds(d: date) -> str:
-    return d.isoformat()
+# Нормальный браузерный набор заголовков
+HEADERS = {
+    "User-Agent": os.getenv(
+        "SOFA_UA",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://www.sofascore.com",
+    "Referer": "https://www.sofascore.com/",
+    "Cache-Control": "no-cache",
+}
 
-def _json_from_text(t: str) -> Dict[str, Any]:
-    t = t.strip()
-    if t.startswith("{") or t.startswith("["):
-        return json.loads(t)
-    # иногда r.jina.ai может обернуть, но обычно не нужно
-    return json.loads(t)
+class SofascoreChallenge(Exception):
+    """Сигнализируем вызывающему коду о временной защите/не-JSON ответе."""
+    pass
 
-async def _get_json(client: httpx.AsyncClient, url: str) -> Dict[str, Any]:
-    r = await client.get(url, headers=DEFAULT_HEADERS, timeout=25.0, follow_redirects=True)
-    # если это прокси — content-type может быть text/plain
-    if r.status_code == 200:
+def _ds(d: dt.date) -> str:
+    return d.strftime("%Y-%m-%d")
+
+def _json_from_text(t: str):
+    s = t.lstrip()
+    # иногда Sofascore присылает префикс вида while(1);
+    if s.startswith("while(1);"):
+        s = s[len("while(1);"):]
+    return json.loads(s)
+
+async def _get_json(client: httpx.AsyncClient, url: str) -> dict:
+    r = await client.get(url, headers=HEADERS, timeout=20.0)
+    # Явный 403 — бросаем читаемое исключение
+    if r.status_code == 403:
+        raise SofascoreChallenge(f"403 challenge at {url}")
+    ct = (r.headers.get("content-type") or "").lower()
+    text = r.text or ""
+    # Если не JSON — пробуем распарсить, иначе считаем это челленджем/HTML
+    if "json" not in ct:
         try:
-            return r.json()
+            return _json_from_text(text)
         except Exception:
-            return _json_from_text(r.text)
-    r.raise_for_status()
-    return {}
+            raise SofascoreChallenge(f"non-json response {r.status_code} at {url}")
+    try:
+        return r.json()
+    except Exception:
+        # На всякий — вторая попытка через ручной парсинг
+        try:
+            return _json_from_text(text)
+        except Exception:
+            raise SofascoreChallenge(f"invalid json at {url}")
 
-async def _try_get(client: httpx.AsyncClient, path: str) -> Dict[str, Any]:
+async def _try_get(client: httpx.AsyncClient, path: str) -> dict:
     last_exc: Exception | None = None
     for base in BASES:
+        url = f"{base}{path}"
         try:
-            return await _get_json(client, f"{base}{path}")
+            # небольшой джиттер между попытками
+            await asyncio.sleep(0.25 + random.random() * 0.35)
+            return await _get_json(client, url)
+        except SofascoreChallenge as e:
+            last_exc = e
         except Exception as e:
             last_exc = e
-            await asyncio.sleep(0.25)
     if last_exc:
         raise last_exc
-    raise RuntimeError("No sources")
+    return {}
 
-def event_id_of(ev: Dict[str, Any]) -> str:
-    return str(ev.get("id") or (ev.get("event") or {}).get("id"))
+# ----------------- Публичные функции-провайдеры -----------------
 
-def _is_bad_category(ev: Dict[str, Any]) -> bool:
-    cat = ((ev.get("tournament") or {}).get("category") or {}).get("id")
-    return cat in (15, 25, 50)
+async def events_by_date(client: httpx.AsyncClient, d: dt.date) -> list[dict]:
+    """
+    Возвращает список событий (даже если Sofascore кинул challenge, мы не падаем).
+    """
+    try:
+        data = await _try_get(client, f"/sport/tennis/scheduled-events/{_ds(d)}")
+        return data.get("events", []) or []
+    except SofascoreChallenge as e:
+        # Позволяем вызывающему коду решить: молча вернуться с пустым списком или залогировать
+        raise e
 
-def _tour_label(ev: Dict[str, Any]) -> Tuple[str, str]:
-    t = ev.get("tournament") or {}
-    cat = t.get("category") or {}
-    cat_name = (cat.get("name") or "").strip()
-    tour_name = (t.get("name") or "").strip()
-    # id для группировки должен быть стабильный
-    tid = f"{cat.get('uniqueId','')}/{t.get('uniqueId','')}"
-    name = f"{cat_name} — {tour_name}".strip(" —")
-    return (name, tid)
-
-def group_tournaments(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    buckets: Dict[str, Dict[str, Any]] = {}
-    for ev in events:
-        if _is_bad_category(ev):
-            continue
-        name, tid = _tour_label(ev)
-        b = buckets.setdefault(tid, {"id": tid, "name": name, "events": []})
-        b["events"].append(ev)
-    # сортируем для красоты
-    return sorted(buckets.values(), key=lambda b: b["name"])
-
-def _from_ts(ts: int | None) -> datetime | None:
-    return datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
-
-def event_status(ev: Dict[str, Any]) -> Dict[str, Any]:
-    st = (ev.get("status") or {}).get("type")
-    start_dt = _from_ts(ev.get("startTimestamp"))
-    home = (ev.get("homeTeam") or {}).get("name", "")
-    away = (ev.get("awayTeam") or {}).get("name", "")
-    return {"state": st, "start": start_dt, "home": home, "away": away}
-
-async def events_by_date(client: httpx.AsyncClient, d: date) -> List[Dict[str, Any]]:
-    data = await _try_get(client, f"/sport/tennis/scheduled-events/{_ds(d)}")
-    return data.get("events") or []
-
-async def events_live(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
-    data = await _try_get(client, "/sport/tennis/events/live")
-    return data.get("events") or []
-
-# на будущее — добирание подробностей/статистики
-async def event_stats_any(client: httpx.AsyncClient, event_id: str) -> Dict[str, Any]:
-    # пробуем несколько вариантов
-    paths = [
-        f"/event/{event_id}/statistics",
-        f"/event/{event_id}",
-    ]
-    last: Dict[str, Any] = {}
-    for p in paths:
-        try:
-            last = await _try_get(client, p)
-            if last:
-                break
-        except Exception:
-            continue
-    return last
+async def live_events(client: httpx.AsyncClient) -> list[dict]:
+    try:
+        data = await _try_get(client, "/sport/tennis/events/live")
+        return data.get("events", []) or []
+    except SofascoreChallenge as e:
+        raise e
