@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request, HTTPException
 
 from db_pg import (
     ensure_schema, ensure_user, set_tz, get_tz,
-    add_watch, remove_watch, clear_today, list_today
+    add_watch, clear_today, list_today
 )
 from tg_api import send_message, answer_callback_query
 from formatter import build_match_message
@@ -16,7 +16,7 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 app = FastAPI()
 
-# --- ленивая инициализация схемы (чтобы не падать на холодном старте) ---
+# --- ленивая инициализация схемы БД ---
 _schema_ready = False
 def _ensure_schema_safe():
     global _schema_ready
@@ -28,14 +28,7 @@ def _ensure_schema_safe():
     except Exception:
         _schema_ready = False
 
-# --- пинги (обрабатываем и "" и "/") ---
-@app.get("")
-@app.get("/")
-def ping():
-    _ensure_schema_safe()
-    return {"ok": True, "service": "webhook"}
-
-# --- утилиты ---
+# --------- helpers ----------
 def _today_local(chat_id: int) -> date:
     tz = ZoneInfo(get_tz(chat_id))
     return datetime.now(tz).date()
@@ -44,7 +37,7 @@ def _parse_names(text: str) -> List[str]:
     parts = [p.strip() for p in text.split(",")]
     return [p for p in parts if p]
 
-# --- UI: меню турниров и матчей ---
+# --------- UI screens ----------
 async def _send_tournaments_menu(chat_id: int):
     _ensure_schema_safe()
     async with httpx.AsyncClient() as client:
@@ -94,13 +87,25 @@ async def _send_matches_menu(chat_id: int, tour_id: str):
 
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
-# --- основной вебхук (обрабатываем и "" и "/") ---
-@app.post("")
-@app.post("/")
+# --------- health/hello ----------
+@app.get("/api/hello")
+def hello():
+    _ensure_schema_safe()
+    return {"ok": True}
+
+# --------- webhook (GET ping + POST апдейты) ----------
+@app.get("/api/webhook")
+@app.get("/api/webhook/")
+def webhook_ping():
+    _ensure_schema_safe()
+    return {"ok": True, "service": "webhook"}
+
+@app.post("/api/webhook")
+@app.post("/api/webhook/")
 async def webhook(req: Request):
     _ensure_schema_safe()
 
-    # секретный заголовок Телеграма (если задан)
+    # защитный заголовок от Телеграма
     if WEBHOOK_SECRET:
         token = req.headers.get("x-telegram-bot-api-secret-token")
         if token != WEBHOOK_SECRET:
@@ -112,12 +117,12 @@ async def webhook(req: Request):
     except Exception:
         return {"ok": True}
 
-    # --- callback_query (кнопки) ---
+    # --- callback_query ---
     if "callback_query" in upd:
         cq = upd["callback_query"]
         cq_id = cq.get("id")
         chat_id = (cq.get("message") or {}).get("chat", {}).get("id")
-        data = cq.get("data") or ""
+        data = (cq.get("data") or "")
         if not chat_id:
             return {"ok": True}
 
@@ -166,7 +171,6 @@ async def webhook(req: Request):
                 await send_message(chat_id, "Турнир уже недоступен.")
             return {"ok": True}
 
-        # неизвестные callback-и игнорируем
         await answer_callback_query(cq_id)
         return {"ok": True}
 
@@ -175,7 +179,6 @@ async def webhook(req: Request):
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
     if not chat_id:
-        # могут прилетать service updates (my_chat_member и т.п.)
         return {"ok": True}
 
     ensure_user(chat_id)
@@ -217,7 +220,6 @@ async def webhook(req: Request):
         await send_message(chat_id, f"Ок, очистил список ({n} записей).")
         return {"ok": True}
 
-    # ручное добавление по старой схеме (оставлено как fallback)
     if text.startswith("/watch"):
         toks = text.split(maxsplit=1)
         if len(toks) < 2:
@@ -230,5 +232,4 @@ async def webhook(req: Request):
         await send_message(chat_id, "Добавил. /list")
         return {"ok": True}
 
-    # игнор прочих сообщений
     return {"ok": True}
