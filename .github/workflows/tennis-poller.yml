@@ -1,25 +1,22 @@
 name: tennis-poller
-
 on:
-  schedule:
-    - cron: "*/5 * * * *"  # каждые 5 минут
   workflow_dispatch:
-
+  schedule:
+    - cron: "15 4-22/3 * * *"   # каждые ~3 часа днём по UTC (бесплатно и достаточно)
 jobs:
   poll:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
-      - env:
+        with: { python-version: "3.11" }
+      - name: Install
+        run: pip install -r requirements.txt
+      - name: Prepare env
+        env:
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          APP_TZ: Europe/Helsinki
-          DATA_SOURCE: sofascore
+        run: python -c "import os; print('PG set?', bool(os.getenv('POSTGRES_URL')))"
+      - name: Fill cache
+        env:
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
         run: python gha_worker.py
