@@ -4,7 +4,7 @@ import os
 app = FastAPI()
 
 @app.get("/")
-def hello_root():
+def root():
     return {"ok": True, "service": "hello", "path": "/api/hello"}
 
 @app.get("/debug-env")
