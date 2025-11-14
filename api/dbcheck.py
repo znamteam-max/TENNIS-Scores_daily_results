@@ -1,3 +1,4 @@
+__build__ = "2025-11-14-20-xx"
 from fastapi import FastAPI, HTTPException, Request
 import os
 from db_pg import ensure_schema
