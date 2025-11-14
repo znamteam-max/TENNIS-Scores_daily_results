@@ -40,6 +40,11 @@ __all__ = [
     # кэш расписания
     "cache_schedule",
     "read_schedule",
+    # алиасы кэша (чтобы не ловить ImportError из webhook.py)
+    "get_events_cache",
+    "set_events_cache",
+    "get_schedule",
+    "store_schedule",
 ]
 
 # ----------- CONFIG -----------
@@ -145,7 +150,6 @@ def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
 def set_alias(name_en: str, name_ru: Optional[str]) -> None:
     save_player_locale(name_en, name_ru)
 
-# удобные алиасы на случай других импортов
 def add_player_alias(name_en: str, name_ru: Optional[str]) -> None:
     save_player_locale(name_en, name_ru)
 
@@ -211,7 +215,6 @@ def list_watches(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
-# алиас: то же самое, просто под другим именем
 def watches_for(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
     return list_watches(chat_id, day)
 
@@ -241,7 +244,6 @@ def clear_today(chat_id: int, day: dt.date) -> int:
         )
         return cur.rowcount
 
-# дополнительные алиасы, чтобы больше не ловить ImportError по названиям
 def clear_watches(chat_id: int, day: dt.date) -> int:
     return clear_today(chat_id, day)
 
@@ -274,3 +276,19 @@ def read_schedule(day: dt.date) -> Optional[Dict[str, Any]]:
             return row[0] if isinstance(row[0], dict) else json.loads(row[0])
         except Exception:
             return None
+
+# ----------- ALIASES so webhook never crashes on import -----------
+
+# В вебхуке могут импортироваться такие названия:
+def get_events_cache(day: dt.date) -> Optional[Dict[str, Any]]:
+    return read_schedule(day)
+
+def set_events_cache(day: dt.date, payload: Dict[str, Any]) -> None:
+    cache_schedule(day, payload)
+
+# На всякий случай ещё два «классических» имени:
+def get_schedule(day: dt.date) -> Optional[Dict[str, Any]]:
+    return read_schedule(day)
+
+def store_schedule(day: dt.date, payload: Dict[str, Any]) -> None:
+    cache_schedule(day, payload)
