@@ -1,6 +1,8 @@
 # db_pg.py
 # Neon Postgres обёртка (использует переменную окружения POSTGRES_URL)
 # Таблицы: users, watches, player_names, schedules (кэш расписания)
+from __future__ import annotations
+
 import os
 import json
 import datetime as dt
@@ -9,16 +11,38 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
+__all__ = [
+    "ensure_schema",
+    "ensure_user",
+    "get_tz",
+    "set_tz",
+    "today_for_chat",
+    "save_player_locale",
+    "get_player_ru",
+    "ru_name_for",
+    "set_alias",
+    "add_watches",
+    "list_watches",
+    "remove_watch",
+    "cache_schedule",
+    "read_schedule",
+]
+
+# ----------- CONFIG -----------
+
 DEFAULT_TZ = os.getenv("APP_TZ", "Europe/Helsinki")
-DSN = os.getenv("POSTGRES_URL")
+
+# Основной DSN (Neon / Vercel secret)
+DSN = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 if not DSN:
-    raise RuntimeError("POSTGRES_URL is not set")
+    raise RuntimeError("POSTGRES_URL (или DATABASE_URL) не задан")
 
 def _conn():
-    # autocommit=True — удобно для простых upsert'ов и DDL
+    # autocommit=True — удобно для простых upsert'ов и DDL; psycopg v3
     return psycopg.connect(DSN, autocommit=True)
 
-# ---------------- СХЕМА ----------------
+
+# ----------- SCHEMA -----------
 
 def ensure_schema() -> None:
     """Создаёт таблицы, если их ещё нет."""
@@ -32,7 +56,7 @@ def ensure_schema() -> None:
     create table if not exists player_names(
         -- каноничное английское имя игрока
         name_en     text primary key,
-        -- как писать на русском
+        -- как писать на русском (ручной алиас; может быть NULL, если ещё не знаем)
         name_ru     text
     );
 
@@ -56,7 +80,8 @@ def ensure_schema() -> None:
     with _conn() as con, con.cursor() as cur:
         cur.execute(ddl)
 
-# --------------- USERS / TZ ----------------
+
+# ----------- USERS / TZ -----------
 
 def ensure_user(chat_id: int, tz: Optional[str] = None) -> None:
     """Гарантирует наличие пользователя; при переданном tz — обновляет его."""
@@ -95,10 +120,13 @@ def today_for_chat(chat_id: int) -> dt.date:
         now_local = dt.datetime.now(ZoneInfo(DEFAULT_TZ))
     return now_local.date()
 
-# --------- СЛОВАРЬ ИМЁН ИГРОКОВ (EN <-> RU) ---------
+
+# ----------- PLAYER NAMES (EN <-> RU) -----------
 
 def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
-    """Сохранить/обновить русскую запись для игрока (ручной мэппинг навсегда)."""
+    """
+    Сохранить/обновить русскую запись для игрока (ручной мэппинг «навсегда»).
+    """
     name_en = (name_en or "").strip()
     name_ru = (name_ru or None)
     if name_ru:
@@ -115,6 +143,12 @@ def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
             (name_en, name_ru),
         )
 
+def set_alias(name_en: str, name_ru: Optional[str]) -> None:
+    """
+    Сохранить постоянный алиас: английское имя -> русская запись.
+    """
+    save_player_locale(name_en, name_ru)
+
 def get_player_ru(name_en: str) -> Optional[str]:
     with _conn() as con, con.cursor() as cur:
         cur.execute(
@@ -125,28 +159,27 @@ def get_player_ru(name_en: str) -> Optional[str]:
         return row[0] if row else None
 
 def _has_cyrillic(s: str) -> bool:
-    return any("А" <= ch <= "я" or ch == "ё" or ch == "Ё" for ch in s)
+    return any("А" <= ch <= "я" or ch in ("ё", "Ё") for ch in s)
 
 def ru_name_for(name: str) -> Optional[str]:
     """
     Возвращает русскую запись для имени.
     - Если уже на кириллице — нормализуем пробелы и возвращаем как есть.
-    - Иначе смотрим в player_names. Если нет — None (бот спросит у пользователя).
+    - Иначе — ищем в player_names. Если нет — None (бот спросит у пользователя).
     """
     if not name:
         return None
     name = name.strip()
     if _has_cyrillic(name):
-        # уже русское имя
         return name
-    # английское — пробуем словарь
-    ru = get_player_ru(name)
-    return ru  # может быть None — тогда пусть бот задаст вопрос
+    return get_player_ru(name)
 
-# ---------------- WATCH-ЛИСТ ----------------
+
+# ----------- WATCH LIST -----------
 
 def add_watches(chat_id: int, day: dt.date, names_en: Iterable[str]) -> int:
-    """Добавить нескольких игроков в наблюдение на день.
+    """
+    Добавить нескольких игроков в наблюдение на день.
     Возвращает количество добавленных/обновлённых записей.
     """
     ensure_user(chat_id)
@@ -184,7 +217,9 @@ def list_watches(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
         return [(r[0], r[1]) for r in cur.fetchall()]
 
 def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
-    """Удалить игрока из наблюдения на день. Возвращает число удалённых строк (0/1)."""
+    """
+    Удалить игрока из наблюдения на день. Возвращает число удалённых строк (0/1).
+    """
     with _conn() as con, con.cursor() as cur:
         cur.execute(
             """
@@ -195,12 +230,13 @@ def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
         )
         return cur.rowcount
 
-# ---------------- КЭШ РАСПИСАНИЯ (ДЕНЬ) ----------------
+
+# ----------- SCHEDULE CACHE (per day) -----------
 
 def cache_schedule(day: dt.date, payload: Dict[str, Any]) -> None:
     """
     Сохранить/обновить кэш расписания за день.
-    payload — любой JSON-совместимый dict (например, ответ провайдера после нормализации).
+    payload — любой JSON-совместимый dict (например, нормализованный ответ провайдера).
     """
     js = json.dumps(payload, ensure_ascii=False)
     with _conn() as con, con.cursor() as cur:
@@ -216,14 +252,15 @@ def cache_schedule(day: dt.date, payload: Dict[str, Any]) -> None:
         )
 
 def read_schedule(day: dt.date) -> Optional[Dict[str, Any]]:
-    """Вернуть кэш расписания за день, если есть (dict) или None."""
+    """
+    Вернуть кэш расписания за день, если есть (dict) или None.
+    """
     with _conn() as con, con.cursor() as cur:
         cur.execute("select payload from schedules where day=%s", (day,))
         row = cur.fetchone()
         if not row:
             return None
         try:
-            # psycopg вернёт уже dict, но если драйвер отдал str — подстрахуемся
             return row[0] if isinstance(row[0], dict) else json.loads(row[0])
         except Exception:
             return None
