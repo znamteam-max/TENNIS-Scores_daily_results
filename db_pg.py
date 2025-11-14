@@ -1,9 +1,10 @@
 # db_pg.py
-# Neon Postgres обёртка (использует переменную окружения POSTGRES_URL / DATABASE_URL)
+# Neon Postgres обёртка (POSTGRES_URL / DATABASE_URL)
 # Таблицы: users, player_names, watches, schedules
 from __future__ import annotations
 
 import os
+import re
 import json
 import datetime as dt
 from typing import Iterable, Optional, Tuple, List, Dict, Any
@@ -12,6 +13,8 @@ from zoneinfo import ZoneInfo
 import psycopg
 
 __all__ = [
+    # утилиты
+    "norm_key",
     # схема/коннект
     "ensure_schema",
     # пользователи и часовой пояс
@@ -40,7 +43,7 @@ __all__ = [
     # кэш расписания
     "cache_schedule",
     "read_schedule",
-    # алиасы кэша (чтобы не ловить ImportError из webhook.py)
+    # алиасы кэша (совместимость с webhook.py)
     "get_events_cache",
     "set_events_cache",
     "get_schedule",
@@ -57,6 +60,24 @@ if not DSN:
 
 def _conn():
     return psycopg.connect(DSN, autocommit=True)
+
+# ----------- UTILS -----------
+
+_ws_re = re.compile(r"\s+")
+
+def norm_key(name: str) -> str:
+    """
+    Нормализованное ключевое представление имени:
+    - обрезка пробелов
+    - сжатие последовательностей пробелов до одного
+    - lower()
+    - замена 'ё' -> 'е'
+    """
+    if not name:
+        return ""
+    s = _ws_re.sub(" ", name).strip().lower()
+    s = s.replace("ё", "е")
+    return s
 
 # ----------- SCHEMA -----------
 
@@ -169,11 +190,15 @@ def _has_cyrillic(s: str) -> bool:
     return any("А" <= ch <= "я" or ch in ("ё", "Ё") for ch in s)
 
 def ru_name_for(name: str) -> Optional[str]:
+    """
+    Если на входе уже кириллица — считаем это готовым русским именем.
+    Иначе пытаемся найти русское имя по английскому ключу.
+    """
     if not name:
         return None
     name = name.strip()
     if _has_cyrillic(name):
-        return name
+        return name.replace("Ё", "Е").replace("ё", "е")
     return get_player_ru(name)
 
 # ----------- WATCH LIST -----------
@@ -277,16 +302,14 @@ def read_schedule(day: dt.date) -> Optional[Dict[str, Any]]:
         except Exception:
             return None
 
-# ----------- ALIASES so webhook never crashes on import -----------
+# ----------- ALIASES (совместимость для webhook.py) -----------
 
-# В вебхуке могут импортироваться такие названия:
 def get_events_cache(day: dt.date) -> Optional[Dict[str, Any]]:
     return read_schedule(day)
 
 def set_events_cache(day: dt.date, payload: Dict[str, Any]) -> None:
     cache_schedule(day, payload)
 
-# На всякий случай ещё два «классических» имени:
 def get_schedule(day: dt.date) -> Optional[Dict[str, Any]]:
     return read_schedule(day)
 
