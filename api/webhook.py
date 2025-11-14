@@ -4,17 +4,21 @@ from zoneinfo import ZoneInfo
 from typing import List
 from fastapi import FastAPI, Request, HTTPException
 
-from db_pg import ensure_schema, ensure_user, set_tz, get_tz, add_watch, remove_watch, clear_today, list_today
+from db_pg import (
+    ensure_schema, ensure_user, set_tz, get_tz,
+    add_watch, remove_watch, clear_today, list_today
+)
 from tg_api import send_message, answer_callback_query
 from formatter import build_match_message
 from providers import sofascore as ss
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+
 app = FastAPI()
 
+# --- ленивая инициализация схемы (чтобы не падать на холодном старте) ---
 _schema_ready = False
 def _ensure_schema_safe():
-    """Ленивая, безопасная инициализация БД; не валим импорт функции."""
     global _schema_ready
     if _schema_ready:
         return
@@ -24,11 +28,14 @@ def _ensure_schema_safe():
     except Exception:
         _schema_ready = False
 
+# --- пинги (обрабатываем и "" и "/") ---
+@app.get("")
 @app.get("/")
 def ping():
     _ensure_schema_safe()
     return {"ok": True, "service": "webhook"}
 
+# --- утилиты ---
 def _today_local(chat_id: int) -> date:
     tz = ZoneInfo(get_tz(chat_id))
     return datetime.now(tz).date()
@@ -37,6 +44,7 @@ def _parse_names(text: str) -> List[str]:
     parts = [p.strip() for p in text.split(",")]
     return [p for p in parts if p]
 
+# --- UI: меню турниров и матчей ---
 async def _send_tournaments_menu(chat_id: int):
     _ensure_schema_safe()
     async with httpx.AsyncClient() as client:
@@ -45,6 +53,7 @@ async def _send_tournaments_menu(chat_id: int):
     if not tours:
         await send_message(chat_id, "Сегодня турниров нет или расписание недоступно.")
         return
+
     lines = ["Выберите турнир на сегодня:"]
     keyboard = []
     for i, t in enumerate(tours, 1):
@@ -53,6 +62,7 @@ async def _send_tournaments_menu(chat_id: int):
             "text": f"{i}) {t['name']}",
             "callback_data": f"tour:{t['id']}"
         }])
+
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
 async def _send_matches_menu(chat_id: int, tour_id: str):
@@ -84,17 +94,25 @@ async def _send_matches_menu(chat_id: int, tour_id: str):
 
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
+# --- основной вебхук (обрабатываем и "" и "/") ---
+@app.post("")
 @app.post("/")
 async def webhook(req: Request):
     _ensure_schema_safe()
+
+    # секретный заголовок Телеграма (если задан)
     if WEBHOOK_SECRET:
         token = req.headers.get("x-telegram-bot-api-secret-token")
         if token != WEBHOOK_SECRET:
             raise HTTPException(status_code=403, detail="Invalid secret")
 
-    upd = await req.json()
+    # читаем апдейт
+    try:
+        upd = await req.json()
+    except Exception:
+        return {"ok": True}
 
-    # --- callback_query ---
+    # --- callback_query (кнопки) ---
     if "callback_query" in upd:
         cq = upd["callback_query"]
         cq_id = cq.get("id")
@@ -137,7 +155,8 @@ async def webhook(req: Request):
                 cnt = 0
                 seen = set()
                 for ev in tour["events"]:
-                    for nm in [(ev.get("homeTeam") or {}).get("name",""), (ev.get("awayTeam") or {}).get("name","")]:
+                    for nm in [(ev.get("homeTeam") or {}).get("name",""),
+                               (ev.get("awayTeam") or {}).get("name","")]:
                         if nm and nm not in seen:
                             add_watch(chat_id, nm, "sofascore", today)
                             seen.add(nm)
@@ -147,17 +166,20 @@ async def webhook(req: Request):
                 await send_message(chat_id, "Турнир уже недоступен.")
             return {"ok": True}
 
+        # неизвестные callback-и игнорируем
         await answer_callback_query(cq_id)
         return {"ok": True}
 
     # --- обычные сообщения ---
     msg = upd.get("message") or upd.get("edited_message") or {}
-    text = (msg.get("text") or "").strip()
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
     if not chat_id:
+        # могут прилетать service updates (my_chat_member и т.п.)
         return {"ok": True}
+
     ensure_user(chat_id)
+    text = (msg.get("text") or "").strip()
 
     if text.startswith("/start") or text.startswith("/help"):
         await _send_tournaments_menu(chat_id)
@@ -195,6 +217,7 @@ async def webhook(req: Request):
         await send_message(chat_id, f"Ок, очистил список ({n} записей).")
         return {"ok": True}
 
+    # ручное добавление по старой схеме (оставлено как fallback)
     if text.startswith("/watch"):
         toks = text.split(maxsplit=1)
         if len(toks) < 2:
@@ -207,4 +230,5 @@ async def webhook(req: Request):
         await send_message(chat_id, "Добавил. /list")
         return {"ok": True}
 
+    # игнор прочих сообщений
     return {"ok": True}
