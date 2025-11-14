@@ -1,6 +1,6 @@
 # db_pg.py
-# Neon Postgres обёртка (использует переменную окружения POSTGRES_URL)
-# Таблицы: users, player_names, watches, schedules (кэш расписания)
+# Neon Postgres обёртка (использует переменную окружения POSTGRES_URL / DATABASE_URL)
+# Таблицы: users, player_names, watches, schedules
 from __future__ import annotations
 
 import os
@@ -12,21 +12,32 @@ from zoneinfo import ZoneInfo
 import psycopg
 
 __all__ = [
+    # схема/коннект
     "ensure_schema",
+    # пользователи и часовой пояс
     "ensure_user",
     "get_tz",
     "set_tz",
     "today_for_chat",
+    # локализация имён
     "save_player_locale",
-    "get_player_ru",
-    "ru_name_for",
     "set_alias",
+    "add_player_alias",
+    "get_player_ru",
+    "player_ru",
+    "ru_name_for",
+    # watch-лист
     "add_watch",
     "add_watches",
     "list_watches",
+    "watches_for",
+    "list_today",
     "remove_watch",
     "delete_watch",
-    "clear_today",        # <-- добавили
+    "clear_today",
+    "clear_watches",
+    "delete_all_watches",
+    # кэш расписания
     "cache_schedule",
     "read_schedule",
 ]
@@ -134,6 +145,10 @@ def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
 def set_alias(name_en: str, name_ru: Optional[str]) -> None:
     save_player_locale(name_en, name_ru)
 
+# удобные алиасы на случай других импортов
+def add_player_alias(name_en: str, name_ru: Optional[str]) -> None:
+    save_player_locale(name_en, name_ru)
+
 def get_player_ru(name_en: str) -> Optional[str]:
     with _conn() as con, con.cursor() as cur:
         cur.execute(
@@ -142,6 +157,9 @@ def get_player_ru(name_en: str) -> Optional[str]:
         )
         row = cur.fetchone()
         return row[0] if row else None
+
+def player_ru(name_en: str) -> Optional[str]:
+    return get_player_ru(name_en)
 
 def _has_cyrillic(s: str) -> bool:
     return any("А" <= ch <= "я" or ch in ("ё", "Ё") for ch in s)
@@ -193,6 +211,13 @@ def list_watches(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
+# алиас: то же самое, просто под другим именем
+def watches_for(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
+    return list_watches(chat_id, day)
+
+def list_today(chat_id: int) -> List[Tuple[str, Optional[str]]]:
+    return list_watches(chat_id, today_for_chat(chat_id))
+
 def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
     with _conn() as con, con.cursor() as cur:
         cur.execute(
@@ -215,6 +240,13 @@ def clear_today(chat_id: int, day: dt.date) -> int:
             (chat_id, day),
         )
         return cur.rowcount
+
+# дополнительные алиасы, чтобы больше не ловить ImportError по названиям
+def clear_watches(chat_id: int, day: dt.date) -> int:
+    return clear_today(chat_id, day)
+
+def delete_all_watches(chat_id: int, day: dt.date) -> int:
+    return clear_today(chat_id, day)
 
 # ----------- SCHEDULE CACHE (per day) -----------
 
