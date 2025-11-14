@@ -25,6 +25,7 @@ __all__ = [
     "add_watches",
     "list_watches",
     "remove_watch",
+    "delete_watch",      # <-- добавили
     "cache_schedule",
     "read_schedule",
 ]
@@ -228,6 +229,10 @@ def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
             (chat_id, day, name_en.strip()),
         )
         return cur.rowcount
+
+def delete_watch(chat_id: int, day: dt.date, name_en: str) -> int:
+    """Алиас для совместимости со старым кодом webhook."""
+    return remove_watch(chat_id, day, name_en)
 
 
 # ----------- SCHEDULE CACHE (per day) -----------
