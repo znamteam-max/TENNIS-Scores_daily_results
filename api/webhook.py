@@ -1,6 +1,5 @@
 __build__ = "2025-11-14-20-xx"
 # api/webhook.py
-from __future__ import annotations
 import os, re
 from datetime import datetime, date
 from typing import List, Dict, Any
