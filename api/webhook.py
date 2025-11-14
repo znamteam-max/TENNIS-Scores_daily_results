@@ -55,16 +55,19 @@ def _parse_names(text: str) -> List[str]:
 
 def _client() -> httpx.AsyncClient:
     """
-    Клиент для Sofascore: браузерные заголовки, HTTP/2, редиректы.
-    Это снижает шанс получить 403 challenge на Vercel.
+    Пытаемся использовать HTTP/2 (если установлен h2),
+    иначе корректно откатываемся на HTTP/1.1.
     """
-    return httpx.AsyncClient(
+    common = dict(
         headers=ss.DEFAULT_HEADERS,
         follow_redirects=True,
-        transport=httpx.AsyncHTTPTransport(http2=True, retries=2),
         timeout=20.0,
     )
-
+    try:
+        import h2  # noqa: F401  # просто проверка наличия
+        return httpx.AsyncClient(http2=True, **common)
+    except Exception:
+        return httpx.AsyncClient(**common)
 
 # --- технические проверки (GET) на всех вариантах пути ---
 @app.get("")
