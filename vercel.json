@@ -1,0 +1,11 @@
+{
+  "functions": {
+    "api/**/*.py": { "runtime": "python3.12" }
+  },
+  "routes": [
+    { "src": "/api/hello", "dest": "/api/hello.py" },
+    { "src": "/api/hello/(.*)", "dest": "/api/hello.py" },
+    { "src": "/api/webhook", "dest": "/api/webhook.py" },
+    { "src": "/api/webhook/(.*)", "dest": "/api/webhook.py" }
+  ]
+}
