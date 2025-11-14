@@ -1,5 +1,3 @@
-fastapi
-uvicorn
-httpx
-h2
-psycopg[binary]
+httpx[http2]==0.27.2
+h2==4.1.0
+pytz==2024.2
