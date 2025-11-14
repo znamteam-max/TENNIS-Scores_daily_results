@@ -25,7 +25,8 @@ __all__ = [
     "add_watches",
     "list_watches",
     "remove_watch",
-    "delete_watch",      # <-- добавили
+    "delete_watch",
+    "clear_today",        # <-- добавили
     "cache_schedule",
     "read_schedule",
 ]
@@ -34,20 +35,16 @@ __all__ = [
 
 DEFAULT_TZ = os.getenv("APP_TZ", "Europe/Helsinki")
 
-# Основной DSN (Neon / Vercel secret)
 DSN = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 if not DSN:
     raise RuntimeError("POSTGRES_URL (или DATABASE_URL) не задан")
 
 def _conn():
-    # autocommit=True — удобно для простых upsert'ов и DDL; psycopg v3
     return psycopg.connect(DSN, autocommit=True)
-
 
 # ----------- SCHEMA -----------
 
 def ensure_schema() -> None:
-    """Создаёт таблицы, если их ещё нет."""
     ddl = """
     create table if not exists users(
         chat_id     bigint primary key,
@@ -56,9 +53,7 @@ def ensure_schema() -> None:
     );
 
     create table if not exists player_names(
-        -- каноничное английское имя игрока
         name_en     text primary key,
-        -- как писать на русском (ручной алиас; может быть NULL, если ещё не знаем)
         name_ru     text
     );
 
@@ -82,11 +77,9 @@ def ensure_schema() -> None:
     with _conn() as con, con.cursor() as cur:
         cur.execute(ddl)
 
-
 # ----------- USERS / TZ -----------
 
 def ensure_user(chat_id: int, tz: Optional[str] = None) -> None:
-    """Гарантирует наличие пользователя; при переданном tz — обновляет его."""
     with _conn() as con, con.cursor() as cur:
         if tz:
             cur.execute(
@@ -103,18 +96,15 @@ def ensure_user(chat_id: int, tz: Optional[str] = None) -> None:
             )
 
 def get_tz(chat_id: int) -> str:
-    """Возвращает таймзону пользователя или DEFAULT_TZ, если пользователя ещё нет."""
     with _conn() as con, con.cursor() as cur:
         cur.execute("select tz from users where chat_id=%s", (chat_id,))
         row = cur.fetchone()
         return row[0] if row and row[0] else DEFAULT_TZ
 
 def set_tz(chat_id: int, tz: str) -> None:
-    """Устанавливает таймзону пользователю (создаёт пользователя при необходимости)."""
     ensure_user(chat_id, tz=tz)
 
 def today_for_chat(chat_id: int) -> dt.date:
-    """Дата «сегодня» в таймзоне пользователя."""
     tz = get_tz(chat_id)
     try:
         now_local = dt.datetime.now(ZoneInfo(tz))
@@ -122,11 +112,9 @@ def today_for_chat(chat_id: int) -> dt.date:
         now_local = dt.datetime.now(ZoneInfo(DEFAULT_TZ))
     return now_local.date()
 
-
 # ----------- PLAYER NAMES (EN <-> RU) -----------
 
 def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
-    """Сохранить/обновить русскую запись для игрока (ручной мэппинг «навсегда»)."""
     name_en = (name_en or "").strip()
     name_ru = (name_ru or None)
     if name_ru:
@@ -144,7 +132,6 @@ def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
         )
 
 def set_alias(name_en: str, name_ru: Optional[str]) -> None:
-    """Постоянный алиас: английское имя -> русская запись."""
     save_player_locale(name_en, name_ru)
 
 def get_player_ru(name_en: str) -> Optional[str]:
@@ -160,11 +147,6 @@ def _has_cyrillic(s: str) -> bool:
     return any("А" <= ch <= "я" or ch in ("ё", "Ё") for ch in s)
 
 def ru_name_for(name: str) -> Optional[str]:
-    """
-    Возвращает русскую запись для имени.
-    - Если уже на кириллице — нормализуем пробелы и возвращаем как есть.
-    - Иначе — ищем в player_names. Если нет — None (бот спросит у пользователя).
-    """
     if not name:
         return None
     name = name.strip()
@@ -172,14 +154,9 @@ def ru_name_for(name: str) -> Optional[str]:
         return name
     return get_player_ru(name)
 
-
 # ----------- WATCH LIST -----------
 
 def add_watches(chat_id: int, day: dt.date, names_en: Iterable[str]) -> int:
-    """
-    Добавить нескольких игроков в наблюдение на день.
-    Возвращает количество добавленных/обновлённых записей.
-    """
     ensure_user(chat_id)
     added = 0
     with _conn() as con, con.cursor() as cur:
@@ -201,11 +178,9 @@ def add_watches(chat_id: int, day: dt.date, names_en: Iterable[str]) -> int:
     return added
 
 def add_watch(chat_id: int, day: dt.date, name_en: str) -> int:
-    """Удобная обёртка для добавления одного игрока (совместимость с webhook)."""
     return add_watches(chat_id, day, [name_en])
 
 def list_watches(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
-    """Список наблюдений на день: [(name_en, name_ru), ...]"""
     with _conn() as con, con.cursor() as cur:
         cur.execute(
             """
@@ -219,7 +194,6 @@ def list_watches(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
         return [(r[0], r[1]) for r in cur.fetchall()]
 
 def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
-    """Удалить игрока из наблюдения на день. Возвращает число удалённых строк (0/1)."""
     with _conn() as con, con.cursor() as cur:
         cur.execute(
             """
@@ -231,17 +205,20 @@ def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
         return cur.rowcount
 
 def delete_watch(chat_id: int, day: dt.date, name_en: str) -> int:
-    """Алиас для совместимости со старым кодом webhook."""
     return remove_watch(chat_id, day, name_en)
 
+def clear_today(chat_id: int, day: dt.date) -> int:
+    """Удалить все наблюдения пользователя на указанный день. Возвращает кол-во удалённых строк."""
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            "delete from watches where chat_id=%s and day=%s",
+            (chat_id, day),
+        )
+        return cur.rowcount
 
 # ----------- SCHEDULE CACHE (per day) -----------
 
 def cache_schedule(day: dt.date, payload: Dict[str, Any]) -> None:
-    """
-    Сохранить/обновить кэш расписания за день.
-    payload — любой JSON-совместимый dict (например, нормализованный ответ провайдера).
-    """
     js = json.dumps(payload, ensure_ascii=False)
     with _conn() as con, con.cursor() as cur:
         cur.execute(
@@ -256,7 +233,6 @@ def cache_schedule(day: dt.date, payload: Dict[str, Any]) -> None:
         )
 
 def read_schedule(day: dt.date) -> Optional[Dict[str, Any]]:
-    """Вернуть кэш расписания за день, если есть (dict) или None."""
     with _conn() as con, con.cursor() as cur:
         cur.execute("select payload from schedules where day=%s", (day,))
         row = cur.fetchone()
