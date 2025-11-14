@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from datetime import datetime, date
 from typing import List
-
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from zoneinfo import ZoneInfo
@@ -16,15 +15,13 @@ from db_pg import (
 from tg_api import send_message, answer_callback_query
 from providers import sofascore as ss
 
-app = FastAPI()  # <— важно для Vercel
-
+app = FastAPI()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 _schema_ready = False
 
 def _ensure_schema_safe() -> None:
     global _schema_ready
-    if _schema_ready:
-        return
+    if _schema_ready: return
     try:
         ensure_schema()
         _schema_ready = True
@@ -48,16 +45,21 @@ def _client() -> httpx.AsyncClient:
     except Exception:
         return httpx.AsyncClient(**common)
 
+# ---- пинги (оба пути) ----
 @app.get("")
 @app.get("/")
-def ping():
+def ping_root():
     _ensure_schema_safe()
-    return {"ok": True, "service": "webhook"}
+    return {"ok": True, "service": "webhook", "path": "/"}
+
+@app.get("/api/webhook")
+def ping_abs():
+    _ensure_schema_safe()
+    return {"ok": True, "service": "webhook", "path": "/api/webhook"}
 
 async def _send_tournaments_menu(chat_id: int) -> None:
     _ensure_schema_safe()
     today = _today_local(chat_id)
-
     events = get_events_cache(today)
     if not events:
         try:
@@ -67,21 +69,18 @@ async def _send_tournaments_menu(chat_id: int) -> None:
                 set_events_cache(today, events)
         except Exception:
             events = []
-
     if not events:
         await send_message(
             chat_id,
             "Расписание сегодня пока недоступно.\n"
-            "Кэш пополнится GitHub-воркером в ближайшие минуты.\n\n"
+            "Кэш пополнится GitHub-воркером.\n\n"
             "Можно добавить игроков вручную: `/watch Rublev, Musetti`.",
         )
         return
-
     tours = ss.group_tournaments(events)
     if not tours:
         await send_message(chat_id, "Сегодня турниров нет или расписание недоступно.")
         return
-
     lines = ["Выберите турнир на сегодня:"]
     keyboard = []
     for i, t in enumerate(tours, 1):
@@ -95,7 +94,6 @@ async def _send_tournaments_menu(chat_id: int) -> None:
 async def _send_matches_menu(chat_id: int, tour_id: str) -> None:
     _ensure_schema_safe()
     today = _today_local(chat_id)
-
     events = get_events_cache(today)
     if not events:
         try:
@@ -105,17 +103,14 @@ async def _send_matches_menu(chat_id: int, tour_id: str) -> None:
                 set_events_cache(today, events)
         except Exception:
             events = []
-
     if not events:
         await send_message(chat_id, "Список матчей пока недоступен. Попробуйте /start позже.")
         return
-
     tours = ss.group_tournaments(events)
     tour = next((t for t in tours if t["id"] == tour_id), None)
     if not tour:
         await send_message(chat_id, "Турнир не найден или уже недоступен.")
         return
-
     lines = [f"Матчи: {tour['name']}"]
     keyboard = []
     for ev in tour["events"]:
@@ -127,29 +122,25 @@ async def _send_matches_menu(chat_id: int, tour_id: str) -> None:
             "text": f"Следить: {hn} — {an}",
             "callback_data": f"watch_ev:{eid}",
         }])
-
     keyboard.append([{
         "text": "✅ Следить за ВСЕМИ матчами турнира",
         "callback_data": f"watch_tour:{tour_id}",
     }])
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
-@app.post("")
-@app.post("/")
-async def webhook(req: Request):
+# ---- вебхук (оба пути) ----
+async def _handle_webhook(req: Request):
     _ensure_schema_safe()
-
     if WEBHOOK_SECRET:
         token = req.headers.get("x-telegram-bot-api-secret-token")
         if token != WEBHOOK_SECRET:
             raise HTTPException(status_code=403, detail="Invalid secret")
-
     try:
         upd = await req.json()
     except Exception:
         return {"ok": True}
 
-    # --- CALLBACKS ---
+    # callbacks
     if "callback_query" in upd:
         cq = upd["callback_query"]
         cq_id = cq.get("id")
@@ -157,12 +148,10 @@ async def webhook(req: Request):
         data = (cq.get("data") or "").strip()
         if not chat_id:
             return {"ok": True}
-
         if data.startswith("tour:"):
             await answer_callback_query(cq_id)
             await _send_matches_menu(chat_id, data.split(":", 1)[1])
             return {"ok": True}
-
         if data.startswith("watch_ev:"):
             await answer_callback_query(cq_id, "Ок, добавил матч.")
             eid = data.split(":", 1)[1]
@@ -177,7 +166,6 @@ async def webhook(req: Request):
             except Exception as e:
                 await send_message(chat_id, f"Не удалось найти матч.\nTECH: {e}")
                 return {"ok": True}
-
             existing = {(lbl or "").lower() for (lbl, _res, _src) in list_today(chat_id, today)}
             ev = next((e for e in events if ss.event_id_of(e) == eid), None)
             if ev:
@@ -191,7 +179,6 @@ async def webhook(req: Request):
             else:
                 await send_message(chat_id, "Матч уже недоступен.")
             return {"ok": True}
-
         if data.startswith("watch_tour:"):
             await answer_callback_query(cq_id, "Ок, добавил все матчи турнира.")
             tour_id = data.split(":", 1)[1]
@@ -206,7 +193,6 @@ async def webhook(req: Request):
             except Exception as e:
                 await send_message(chat_id, f"Не удалось получить турниры.\nTECH: {e}")
                 return {"ok": True}
-
             tours = ss.group_tournaments(events)
             tour = next((t for t in tours if t["id"] == tour_id), None)
             if tour:
@@ -225,11 +211,10 @@ async def webhook(req: Request):
             else:
                 await send_message(chat_id, "Турнир уже недоступен.")
             return {"ok": True}
-
         await answer_callback_query(cq_id)
         return {"ok": True}
 
-    # --- MESSAGES ---
+    # messages
     msg = upd.get("message") or upd.get("edited_message") or {}
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
@@ -291,3 +276,13 @@ async def webhook(req: Request):
 
     await _send_tournaments_menu(chat_id)
     return {"ok": True}
+
+# маппим оба пути на один обработчик
+@app.post("")
+@app.post("/")
+async def webhook_root(req: Request):
+    return await _handle_webhook(req)
+
+@app.post("/api/webhook")
+async def webhook_abs(req: Request):
+    return await _handle_webhook(req)
