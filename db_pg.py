@@ -1,14 +1,15 @@
 # db_pg.py
 # Neon Postgres обёртка (использует переменную окружения POSTGRES_URL)
-# Таблицы: users, watches, player_names
+# Таблицы: users, watches, player_names, schedules (кэш расписания)
 import os
-import psycopg
+import json
 import datetime as dt
-from typing import Iterable, Optional, Tuple, List
+from typing import Iterable, Optional, Tuple, List, Dict, Any
 from zoneinfo import ZoneInfo
 
-DEFAULT_TZ = os.getenv("APP_TZ", "Europe/Helsinki")
+import psycopg
 
+DEFAULT_TZ = os.getenv("APP_TZ", "Europe/Helsinki")
 DSN = os.getenv("POSTGRES_URL")
 if not DSN:
     raise RuntimeError("POSTGRES_URL is not set")
@@ -45,6 +46,12 @@ def ensure_schema() -> None:
     );
 
     create index if not exists watches_day_idx on watches(day);
+
+    create table if not exists schedules(
+        day         date primary key,
+        payload     jsonb not null,
+        created_at  timestamptz not null default now()
+    );
     """
     with _conn() as con, con.cursor() as cur:
         cur.execute(ddl)
@@ -91,9 +98,13 @@ def today_for_chat(chat_id: int) -> dt.date:
 # --------- СЛОВАРЬ ИМЁН ИГРОКОВ (EN <-> RU) ---------
 
 def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
-    """Сохранить/обновить русскую запись для игрока."""
-    name_en = name_en.strip()
-    name_ru = name_ru.strip() if name_ru else None
+    """Сохранить/обновить русскую запись для игрока (ручной мэппинг навсегда)."""
+    name_en = (name_en or "").strip()
+    name_ru = (name_ru or None)
+    if name_ru:
+        name_ru = name_ru.strip()
+    if not name_en:
+        return
     with _conn() as con, con.cursor() as cur:
         cur.execute(
             """
@@ -112,6 +123,25 @@ def get_player_ru(name_en: str) -> Optional[str]:
         )
         row = cur.fetchone()
         return row[0] if row else None
+
+def _has_cyrillic(s: str) -> bool:
+    return any("А" <= ch <= "я" or ch == "ё" or ch == "Ё" for ch in s)
+
+def ru_name_for(name: str) -> Optional[str]:
+    """
+    Возвращает русскую запись для имени.
+    - Если уже на кириллице — нормализуем пробелы и возвращаем как есть.
+    - Иначе смотрим в player_names. Если нет — None (бот спросит у пользователя).
+    """
+    if not name:
+        return None
+    name = name.strip()
+    if _has_cyrillic(name):
+        # уже русское имя
+        return name
+    # английское — пробуем словарь
+    ru = get_player_ru(name)
+    return ru  # может быть None — тогда пусть бот задаст вопрос
 
 # ---------------- WATCH-ЛИСТ ----------------
 
@@ -164,3 +194,36 @@ def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
             (chat_id, day, name_en.strip()),
         )
         return cur.rowcount
+
+# ---------------- КЭШ РАСПИСАНИЯ (ДЕНЬ) ----------------
+
+def cache_schedule(day: dt.date, payload: Dict[str, Any]) -> None:
+    """
+    Сохранить/обновить кэш расписания за день.
+    payload — любой JSON-совместимый dict (например, ответ провайдера после нормализации).
+    """
+    js = json.dumps(payload, ensure_ascii=False)
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            insert into schedules(day, payload)
+            values (%s, %s::jsonb)
+            on conflict (day) do update set
+                payload = excluded.payload,
+                created_at = now()
+            """,
+            (day, js),
+        )
+
+def read_schedule(day: dt.date) -> Optional[Dict[str, Any]]:
+    """Вернуть кэш расписания за день, если есть (dict) или None."""
+    with _conn() as con, con.cursor() as cur:
+        cur.execute("select payload from schedules where day=%s", (day,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        try:
+            # psycopg вернёт уже dict, но если драйвер отдал str — подстрахуемся
+            return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        except Exception:
+            return None
