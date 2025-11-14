@@ -1,5 +1,3 @@
-# добавьте в конец файла (или замените файл целиком на этот фрагмент)
-
 import httpx, re
 from datetime import date
 from typing import Dict, Any, List, Optional
@@ -29,7 +27,7 @@ def event_id_of(event: Dict[str, Any]) -> Optional[str]:
     eid = event.get("id")
     return str(eid) if eid is not None else None
 
-# ------------ NEW: helpers for tournaments / filters -------------
+# ---- Группировка турниров, фильтр ITF 15/25/50 ----
 def _is_doubles(event: Dict[str, Any]) -> bool:
     hn = (event.get("homeTeam") or {}).get("name") or ""
     an = (event.get("awayTeam") or {}).get("name") or ""
@@ -42,10 +40,9 @@ def _tour_key(event: Dict[str, Any]) -> str:
 
 def _tour_name(event: Dict[str, Any]) -> str:
     t = event.get("tournament") or {}
-    cat = (t.get("category") or {}).get("name") or ""      # ATP / WTA / Challenger Men ...
+    cat = (t.get("category") or {}).get("name") or ""
     tname = t.get("name") or (t.get("uniqueTournament") or {}).get("name") or "Tournament"
     disc = "ПАРНЫЙ РАЗРЯД" if _is_doubles(event) else "ОДИНОЧНЫЙ РАЗРЯД"
-    # Лёгкий ру-лейбл для категории
     cat_ru = (cat
               .replace("Challenger Men", "ЧЕЛЛЕНДЖЕР МУЖЧИНЫ")
               .replace("Challenger Women", "ЧЕЛЛЕНДЖЕР ЖЕНЩИНЫ")
@@ -56,7 +53,6 @@ def _tour_name(event: Dict[str, Any]) -> str:
     return f"{cat_ru} - {disc}: {tname}"
 
 def _is_low_itf(event: Dict[str, Any]) -> bool:
-    """Отсекаем ITF 15/25/50."""
     t = event.get("tournament") or {}
     raw = " ".join([
         (t.get("name") or ""),
@@ -68,7 +64,6 @@ def _is_low_itf(event: Dict[str, Any]) -> bool:
     return any(x in raw for x in [" 15", "m15", "w15", " 25", "m25", "w25", " 50", "w50"])
 
 def group_tournaments(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Группируем события по турнирам, фильтруя ITF 15/25/50."""
     out: Dict[str, Dict[str, Any]] = {}
     for ev in events:
         if _is_low_itf(ev):
@@ -77,29 +72,27 @@ def group_tournaments(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         name = _tour_name(ev)
         out.setdefault(key, {"id": key, "name": name, "events": []})
         out[key]["events"].append(ev)
-    # Стабильная сортировка по имени
     return sorted(out.values(), key=lambda x: x["name"].lower())
+
+# ---- Детальная статистика для карточки ----
+def _extract_sets(ev: Dict[str, Any]) -> List[str]:
+    sets = []
+    hs = ev.get("homeScore", {}) or {}
+    as_ = ev.get("awayScore", {}) or {}
+    for i in range(1, 6):
+        h = hs.get(f"period{i}")
+        a = as_.get(f"period{i}")
+        if h is None or a is None:
+            continue
+        sets.append(f"{h}:{a}")
+    return sets or ([f"{hs.get('current','?')}:{as_.get('current','?')}"]
+                    if hs.get("current") is not None and as_.get("current") is not None else [])
 
 async def event_statistics(client: httpx.AsyncClient, event_id: int) -> Dict[str, Any]:
     details = await _get_json(client, f"{BASE}/event/{event_id}")
     event = details.get("event") or {}
-
-    # --- sets ---
-    def _extract_sets(ev: Dict[str, Any]) -> List[str]:
-        sets = []
-        hs = ev.get("homeScore", {}) or {}
-        as_ = ev.get("awayScore", {}) or {}
-        for i in range(1, 5+1):
-            h = hs.get(f"period{i}")
-            a = as_.get(f"period{i}")
-            if h is None or a is None:
-                continue
-            sets.append(f"{h}:{a}")
-        return sets or ([f"{hs.get('current','?')}:{as_.get('current','?')}"] if hs.get("current") is not None and as_.get("current") is not None else [])
-
     sets = _extract_sets(event)
 
-    # --- duration ---
     duration = None
     try:
         inc = await _get_json(client, f"{BASE}/event/{event_id}/incidents")
@@ -111,7 +104,6 @@ async def event_statistics(client: httpx.AsyncClient, event_id: int) -> Dict[str
     except httpx.HTTPError:
         pass
 
-    # --- stats ---
     stats = {}
     try:
         st = await _get_json(client, f"{BASE}/event/{event_id}/statistics")
@@ -180,4 +172,10 @@ async def event_statistics(client: httpx.AsyncClient, event_id: int) -> Dict[str
 
 async def find_player_events_today(client: httpx.AsyncClient, day: date, player_queries: List[str]) -> List[Dict[str, Any]]:
     events = await events_by_date(client, day)
-    return [e for e in events if any(_norm(q) in _norm((e.get("homeTeam") or {}).get("name","")) or _norm(q) in _norm((e.get("awayTeam") or {}).get("name","")) for q in player_queries)]
+    out = []
+    for e in events:
+        hn = _norm((e.get("homeTeam") or {}).get("name",""))
+        an = _norm((e.get("awayTeam") or {}).get("name",""))
+        if any(_norm(q) in hn or _norm(q) in an for q in player_queries):
+            out.append(e)
+    return out
