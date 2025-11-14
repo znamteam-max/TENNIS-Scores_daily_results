@@ -1,4 +1,3 @@
-# api/webhook.py
 from __future__ import annotations
 
 import os
@@ -23,10 +22,11 @@ from db_pg import (
 from tg_api import send_message, answer_callback_query
 from providers import sofascore as ss
 
-# --- ВАЖНО: app объявлен на верхнем уровне модуля ---
+# ВАЖНО: верхнеуровневый app — это вход для Vercel
 app = FastAPI()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+APP_TZ = os.getenv("APP_TZ", "Europe/Helsinki").strip()
 _schema_ready = False
 
 def _ensure_schema_safe() -> None:
@@ -39,10 +39,14 @@ def _ensure_schema_safe() -> None:
     except Exception:
         _schema_ready = False
 
+def _tz(chat_id: int) -> ZoneInfo:
+    try:
+        return ZoneInfo(get_tz(chat_id))
+    except Exception:
+        return ZoneInfo(APP_TZ)
+
 def _today_local(chat_id: int) -> date:
-    tzname = get_tz(chat_id)
-    tz = ZoneInfo(tzname)
-    return datetime.now(tz).date()
+    return datetime.now(_tz(chat_id)).date()
 
 def _parse_names(text: str) -> List[str]:
     parts = [p.strip() for p in (text or "").split(",")]
@@ -56,7 +60,6 @@ def _client() -> httpx.AsyncClient:
     except Exception:
         return httpx.AsyncClient(**common)
 
-# Vercel мапит файл на /api/webhook, поэтому роуты внутри должны быть "/" (корень функции)
 @app.get("")
 @app.get("/")
 def ping():
@@ -67,9 +70,11 @@ async def _send_tournaments_menu(chat_id: int) -> None:
     _ensure_schema_safe()
     today = _today_local(chat_id)
 
+    # 1) пробуем кэш из БД (его наполняет GitHub Action)
     events = get_events_cache(today)
+
+    # 2) если кэша нет — мягко пробуем прямой вызов и сразу кешируем
     if not events:
-        # пробуем прямую загрузку (может сработать), и сразу кладём в кэш
         try:
             async with _client() as client:
                 events = await ss.events_by_date(client, today)
@@ -82,7 +87,7 @@ async def _send_tournaments_menu(chat_id: int) -> None:
         await send_message(
             chat_id,
             "Расписание сегодня пока недоступно.\n"
-            "Кэш обычно пополняется в течение пары минут.\n\n"
+            "Кэш обычно пополняется GitHub воркером в течение пары минут.\n\n"
             "Можно добавить игроков вручную: `/watch Rublev, Musetti`.",
         )
         return
@@ -159,7 +164,7 @@ async def webhook(req: Request):
     except Exception:
         return {"ok": True}
 
-    # --- CALLBACKS ---
+    # CALLBACKS
     if "callback_query" in upd:
         cq = upd["callback_query"]
         cq_id = cq.get("id")
@@ -239,7 +244,7 @@ async def webhook(req: Request):
         await answer_callback_query(cq_id)
         return {"ok": True}
 
-    # --- MESSAGES ---
+    # MESSAGES
     msg = upd.get("message") or upd.get("edited_message") or {}
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
@@ -299,5 +304,6 @@ async def webhook(req: Request):
                 existing.add(n.lower())
         await send_message(chat_id, "Добавил. /list"); return {"ok": True}
 
+    # дефолт — снова меню турниров
     await _send_tournaments_menu(chat_id)
     return {"ok": True}
