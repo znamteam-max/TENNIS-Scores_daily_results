@@ -4,17 +4,13 @@ from zoneinfo import ZoneInfo
 from typing import List
 from fastapi import FastAPI, Request, HTTPException
 
-from db_pg import (
-    ensure_schema, ensure_user, set_tz, get_tz,
-    add_watch, clear_today, list_today
-)
+from db_pg import ensure_schema, ensure_user, set_tz, get_tz, add_watch, clear_today, list_today
 from tg_api import send_message, answer_callback_query
 from providers import sofascore as ss
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 app = FastAPI()
 
-# лениво создаём схему, чтобы не падать на холодном старте
 _schema_ready = False
 def _ensure_schema_safe():
     global _schema_ready
@@ -26,7 +22,6 @@ def _ensure_schema_safe():
     except Exception:
         _schema_ready = False
 
-# пинг (GET) — и без слэша, и со слэшем
 @app.get("")
 @app.get("/")
 def ping():
@@ -53,10 +48,7 @@ async def _send_tournaments_menu(chat_id: int):
     keyboard = []
     for i, t in enumerate(tours, 1):
         lines.append(f"{i}) {t['name']}")
-        keyboard.append([{
-            "text": f"{i}) {t['name']}",
-            "callback_data": f"tour:{t['id']}"
-        }])
+        keyboard.append([{ "text": f"{i}) {t['name']}", "callback_data": f"tour:{t['id']}"}])
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
 async def _send_matches_menu(chat_id: int, tour_id: str):
@@ -75,17 +67,10 @@ async def _send_matches_menu(chat_id: int, tour_id: str):
         hn = (ev.get("homeTeam") or {}).get("name", "—")
         an = (ev.get("awayTeam") or {}).get("name", "—")
         lines.append(f"• {hn} — {an}")
-        keyboard.append([{
-            "text": f"Следить: {hn} — {an}",
-            "callback_data": f"watch_ev:{eid}"
-        }])
-    keyboard.append([{
-        "text": "✅ Следить за ВСЕМИ матчами турнира",
-        "callback_data": f"watch_tour:{tour_id}"
-    }])
+        keyboard.append([{ "text": f"Следить: {hn} — {an}", "callback_data": f"watch_ev:{eid}"}])
+    keyboard.append([{ "text": "✅ Следить за ВСЕМИ матчами турнира", "callback_data": f"watch_tour:{tour_id}"}])
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
-# основной вебхук: и без слэша, и со слэшем
 @app.post("")
 @app.post("/")
 async def webhook(req: Request):
@@ -101,12 +86,11 @@ async def webhook(req: Request):
     except Exception:
         return {"ok": True}
 
-    # кнопки
     if "callback_query" in upd:
         cq = upd["callback_query"]
         cq_id = cq.get("id")
         chat_id = (cq.get("message") or {}).get("chat", {}).get("id")
-        data = cq.get("data") or ""
+        data = (cq.get("data") or "")
         if not chat_id:
             return {"ok": True}
 
@@ -158,7 +142,6 @@ async def webhook(req: Request):
         await answer_callback_query(cq_id)
         return {"ok": True}
 
-    # обычные сообщения
     msg = upd.get("message") or upd.get("edited_message") or {}
     chat = msg.get("chat") or {}
     chat_id = chat.get("id")
