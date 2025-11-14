@@ -1,11 +1,10 @@
-# api/hello.py
 from fastapi import FastAPI
 import os
 
 app = FastAPI()
 
 @app.get("/")
-def root():
+def hello_root():
     return {"ok": True, "service": "hello", "path": "/api/hello"}
 
 @app.get("/debug-env")
