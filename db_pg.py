@@ -4,7 +4,6 @@ import os, json
 from contextlib import contextmanager
 from datetime import date
 from typing import Iterable, Tuple, List, Optional
-
 import psycopg
 
 POSTGRES_URL = os.getenv("POSTGRES_URL", "").strip()
@@ -18,14 +17,12 @@ def _conn():
 
 def ensure_schema() -> None:
     with _conn() as con, con.cursor() as cur:
-        # пользователи/таймзоны/ваши таблицы — как было
         cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             chat_id BIGINT PRIMARY KEY,
             tz TEXT NOT NULL DEFAULT 'Europe/Helsinki'
         );
         """)
-
         cur.execute("""
         CREATE TABLE IF NOT EXISTS watch_today (
             chat_id BIGINT NOT NULL,
@@ -35,8 +32,6 @@ def ensure_schema() -> None:
             PRIMARY KEY (chat_id, label, ds)
         );
         """)
-
-        # КЭШ РАСПИСАНИЯ НА ДЕНЬ
         cur.execute("""
         CREATE TABLE IF NOT EXISTS events_cache (
             ds   DATE PRIMARY KEY,
@@ -73,7 +68,6 @@ def clear_today(chat_id: int, ds: date) -> int:
         return cur.rowcount
 
 def list_today(chat_id: int, ds: date) -> List[Tuple[str, Optional[str], str]]:
-    # resolved пока оставим None (или добавь свою резолюцию имен к игрокам)
     with _conn() as con, con.cursor() as cur:
         cur.execute("""
         SELECT label, NULL as resolved, src
@@ -82,8 +76,6 @@ def list_today(chat_id: int, ds: date) -> List[Tuple[str, Optional[str], str]]:
         ORDER BY label;
         """, (chat_id, ds))
         return cur.fetchall()
-
-# ---- КЭШ РАСПИСАНИЯ ----
 
 def set_events_cache(ds: date, events: List[dict]) -> None:
     payload = json.dumps(events, ensure_ascii=False)
