@@ -1,3 +1,5 @@
+# добавьте в конец файла (или замените файл целиком на этот фрагмент)
+
 import httpx, re
 from datetime import date
 from typing import Dict, Any, List, Optional
@@ -19,32 +21,85 @@ async def events_by_date(client: httpx.AsyncClient, day: date) -> List[Dict[str,
     data = await _get_json(client, f"{BASE}/sport/tennis/scheduled-events/{ds}")
     return data.get("events", [])
 
-def _match_player_in_event(event: Dict[str, Any], queries: List[str]) -> bool:
-    hn = _norm(event.get("homeTeam", {}).get("name", ""))
-    an = _norm(event.get("awayTeam", {}).get("name", ""))
-    for q in queries:
-        qn = _norm(q)
-        if qn and (qn in hn or qn in an):
-            return True
-    return False
+def is_finished(event: Dict[str, Any]) -> bool:
+    st = (event.get("status", {}) or {}).get("type")
+    return str(st).lower() == "finished"
 
-def _extract_sets(event: Dict[str, Any]) -> List[str]:
-    sets = []
-    hs = event.get("homeScore", {}) or {}
-    as_ = event.get("awayScore", {}) or {}
-    for i in range(1, 6):
-        h = hs.get(f"period{i}")
-        a = as_.get(f"period{i}")
-        if h is None or a is None:
+def event_id_of(event: Dict[str, Any]) -> Optional[str]:
+    eid = event.get("id")
+    return str(eid) if eid is not None else None
+
+# ------------ NEW: helpers for tournaments / filters -------------
+def _is_doubles(event: Dict[str, Any]) -> bool:
+    hn = (event.get("homeTeam") or {}).get("name") or ""
+    an = (event.get("awayTeam") or {}).get("name") or ""
+    return (" / " in hn) and (" / " in an)
+
+def _tour_key(event: Dict[str, Any]) -> str:
+    t = event.get("tournament") or {}
+    ut = t.get("uniqueTournament") or {}
+    return str(ut.get("id") or t.get("id") or "0")
+
+def _tour_name(event: Dict[str, Any]) -> str:
+    t = event.get("tournament") or {}
+    cat = (t.get("category") or {}).get("name") or ""      # ATP / WTA / Challenger Men ...
+    tname = t.get("name") or (t.get("uniqueTournament") or {}).get("name") or "Tournament"
+    disc = "ПАРНЫЙ РАЗРЯД" if _is_doubles(event) else "ОДИНОЧНЫЙ РАЗРЯД"
+    # Лёгкий ру-лейбл для категории
+    cat_ru = (cat
+              .replace("Challenger Men", "ЧЕЛЛЕНДЖЕР МУЖЧИНЫ")
+              .replace("Challenger Women", "ЧЕЛЛЕНДЖЕР ЖЕНЩИНЫ")
+              .replace("ATP", "ATP")
+              .replace("WTA", "WTA")
+              .replace("Davis Cup", "Кубок Дэвиса")
+              .replace("Billie Jean King Cup", "Кубок Билли Джин Кинг"))
+    return f"{cat_ru} - {disc}: {tname}"
+
+def _is_low_itf(event: Dict[str, Any]) -> bool:
+    """Отсекаем ITF 15/25/50."""
+    t = event.get("tournament") or {}
+    raw = " ".join([
+        (t.get("name") or ""),
+        ((t.get("uniqueTournament") or {}).get("name") or ""),
+        ((t.get("category") or {}).get("name") or "")
+    ]).lower()
+    if "itf" not in raw:
+        return False
+    return any(x in raw for x in [" 15", "m15", "w15", " 25", "m25", "w25", " 50", "w50"])
+
+def group_tournaments(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Группируем события по турнирам, фильтруя ITF 15/25/50."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for ev in events:
+        if _is_low_itf(ev):
             continue
-        sets.append(f"{h}:{a}")
-    return sets or ([f"{hs.get('current', '?')}:{as_.get('current','?')}"] if hs.get('current') is not None and as_.get('current') is not None else [])
+        key = _tour_key(ev)
+        name = _tour_name(ev)
+        out.setdefault(key, {"id": key, "name": name, "events": []})
+        out[key]["events"].append(ev)
+    # Стабильная сортировка по имени
+    return sorted(out.values(), key=lambda x: x["name"].lower())
 
 async def event_statistics(client: httpx.AsyncClient, event_id: int) -> Dict[str, Any]:
     details = await _get_json(client, f"{BASE}/event/{event_id}")
     event = details.get("event") or {}
+
+    # --- sets ---
+    def _extract_sets(ev: Dict[str, Any]) -> List[str]:
+        sets = []
+        hs = ev.get("homeScore", {}) or {}
+        as_ = ev.get("awayScore", {}) or {}
+        for i in range(1, 5+1):
+            h = hs.get(f"period{i}")
+            a = as_.get(f"period{i}")
+            if h is None or a is None:
+                continue
+            sets.append(f"{h}:{a}")
+        return sets or ([f"{hs.get('current','?')}:{as_.get('current','?')}"] if hs.get("current") is not None and as_.get("current") is not None else [])
+
     sets = _extract_sets(event)
 
+    # --- duration ---
     duration = None
     try:
         inc = await _get_json(client, f"{BASE}/event/{event_id}/incidents")
@@ -56,6 +111,7 @@ async def event_statistics(client: httpx.AsyncClient, event_id: int) -> Dict[str
     except httpx.HTTPError:
         pass
 
+    # --- stats ---
     stats = {}
     try:
         st = await _get_json(client, f"{BASE}/event/{event_id}/statistics")
@@ -64,50 +120,35 @@ async def event_statistics(client: httpx.AsyncClient, event_id: int) -> Dict[str
                 continue
             for g in root.get("groups", []):
                 for item in g.get("statisticsItems", []):
-                    name = item.get("name", "")
-                    h = item.get("home", None)
-                    a = item.get("away", None)
+                    name = (item.get("name") or "").lower()
+                    h = item.get("home")
+                    a = item.get("away")
                     key = None
-                    nl = name.lower()
-                    if "ace" in nl:
-                        key = "aces"
-                    elif "double" in nl:
-                        key = "doubles"
-                    elif "first serve in" in nl or "1st serve in" in nl:
-                        key = "first_serve_in_pct"
-                    elif "first serve points won" in nl or "1st serve points won" in nl:
-                        key = "first_serve_points_won_pct"
-                    elif "second serve points won" in nl or "2nd serve points won" in nl:
-                        key = "second_serve_points_won_pct"
-                    elif "winners" in nl:
-                        key = "winners"
-                    elif "unforced errors" in nl:
-                        key = "unforced"
-                    elif "break points saved" in nl:
-                        key = "break_points_saved"
-                    elif "break points faced" in nl:
-                        key = "break_points_faced"
-                    elif "match points saved" in nl:
-                        key = "match_points_saved"
-                    else:
+                    if "ace" in name: key = "aces"
+                    elif "double" in name: key = "doubles"
+                    elif "first serve in" in name or "1st serve in" in name: key = "first_serve_in_pct"
+                    elif "first serve points won" in name or "1st serve points won" in name: key = "first_serve_points_won_pct"
+                    elif "second serve points won" in name or "2nd serve points won" in name: key = "second_serve_points_won_pct"
+                    elif "winners" in name: key = "winners"
+                    elif "unforced errors" in name: key = "unforced"
+                    elif "break points saved" in name: key = "break_points_saved"
+                    elif "break points faced" in name: key = "break_points_faced"
+                    elif "match points saved" in name: key = "match_points_saved"
+                    if not key: 
                         continue
-                    if key not in stats:
-                        stats[key] = {"home": None, "away": None}
+                    stats.setdefault(key, {"home": None, "away": None})
                     stats[key]["home"] = h
                     stats[key]["away"] = a
     except httpx.HTTPError:
         pass
 
     def pack(side: str) -> dict:
-        def get_num(k):
-            return stats.get(k, {}).get(side)
+        def get_num(k): return stats.get(k, {}).get(side)
         def get_pct(k):
             v = stats.get(k, {}).get(side)
-            if v is None:
-                return None
+            if v is None: return None
             try:
-                if isinstance(v, str) and v.endswith('%'):
-                    v = v[:-1]
+                if isinstance(v, str) and v.endswith('%'): v = v[:-1]
                 return float(v)
             except Exception:
                 return None
@@ -124,8 +165,8 @@ async def event_statistics(client: httpx.AsyncClient, event_id: int) -> Dict[str
             "match_points_saved": get_num("match_points_saved"),
         }
 
-    home_name = event.get("homeTeam", {}).get("name", "Игрок A")
-    away_name = event.get("awayTeam", {}).get("name", "Игрок B")
+    home_name = (event.get("homeTeam") or {}).get("name", "Игрок A")
+    away_name = (event.get("awayTeam") or {}).get("name", "Игрок B")
 
     return {
         "event_id": str(event.get("id")),
@@ -139,12 +180,4 @@ async def event_statistics(client: httpx.AsyncClient, event_id: int) -> Dict[str
 
 async def find_player_events_today(client: httpx.AsyncClient, day: date, player_queries: List[str]) -> List[Dict[str, Any]]:
     events = await events_by_date(client, day)
-    return [e for e in events if _match_player_in_event(e, player_queries)]
-
-def is_finished(event: Dict[str, Any]) -> bool:
-    st = (event.get("status", {}) or {}).get("type")
-    return str(st).lower() == "finished"
-
-def event_id_of(event: Dict[str, Any]) -> Optional[str]:
-    eid = event.get("id")
-    return str(eid) if eid is not None else None
+    return [e for e in events if any(_norm(q) in _norm((e.get("homeTeam") or {}).get("name","")) or _norm(q) in _norm((e.get("awayTeam") or {}).get("name","")) for q in player_queries)]
