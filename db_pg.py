@@ -1,6 +1,6 @@
 # db_pg.py
 # Neon Postgres обёртка (использует переменную окружения POSTGRES_URL)
-# Таблицы: users, watches, player_names, schedules (кэш расписания)
+# Таблицы: users, player_names, watches, schedules (кэш расписания)
 from __future__ import annotations
 
 import os
@@ -21,6 +21,7 @@ __all__ = [
     "get_player_ru",
     "ru_name_for",
     "set_alias",
+    "add_watch",
     "add_watches",
     "list_watches",
     "remove_watch",
@@ -124,9 +125,7 @@ def today_for_chat(chat_id: int) -> dt.date:
 # ----------- PLAYER NAMES (EN <-> RU) -----------
 
 def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
-    """
-    Сохранить/обновить русскую запись для игрока (ручной мэппинг «навсегда»).
-    """
+    """Сохранить/обновить русскую запись для игрока (ручной мэппинг «навсегда»)."""
     name_en = (name_en or "").strip()
     name_ru = (name_ru or None)
     if name_ru:
@@ -144,9 +143,7 @@ def save_player_locale(name_en: str, name_ru: Optional[str]) -> None:
         )
 
 def set_alias(name_en: str, name_ru: Optional[str]) -> None:
-    """
-    Сохранить постоянный алиас: английское имя -> русская запись.
-    """
+    """Постоянный алиас: английское имя -> русская запись."""
     save_player_locale(name_en, name_ru)
 
 def get_player_ru(name_en: str) -> Optional[str]:
@@ -202,6 +199,10 @@ def add_watches(chat_id: int, day: dt.date, names_en: Iterable[str]) -> int:
             added += 1
     return added
 
+def add_watch(chat_id: int, day: dt.date, name_en: str) -> int:
+    """Удобная обёртка для добавления одного игрока (совместимость с webhook)."""
+    return add_watches(chat_id, day, [name_en])
+
 def list_watches(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
     """Список наблюдений на день: [(name_en, name_ru), ...]"""
     with _conn() as con, con.cursor() as cur:
@@ -217,9 +218,7 @@ def list_watches(chat_id: int, day: dt.date) -> List[Tuple[str, Optional[str]]]:
         return [(r[0], r[1]) for r in cur.fetchall()]
 
 def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
-    """
-    Удалить игрока из наблюдения на день. Возвращает число удалённых строк (0/1).
-    """
+    """Удалить игрока из наблюдения на день. Возвращает число удалённых строк (0/1)."""
     with _conn() as con, con.cursor() as cur:
         cur.execute(
             """
@@ -252,9 +251,7 @@ def cache_schedule(day: dt.date, payload: Dict[str, Any]) -> None:
         )
 
 def read_schedule(day: dt.date) -> Optional[Dict[str, Any]]:
-    """
-    Вернуть кэш расписания за день, если есть (dict) или None.
-    """
+    """Вернуть кэш расписания за день, если есть (dict) или None."""
     with _conn() as con, con.cursor() as cur:
         cur.execute("select payload from schedules where day=%s", (day,))
         row = cur.fetchone()
