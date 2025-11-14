@@ -11,10 +11,22 @@ from providers import sofascore as ss
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 app = FastAPI()
-ensure_schema()
+
+_schema_ready = False
+def _ensure_schema_safe():
+    """Ленивая, безопасная инициализация БД; не валим импорт функции."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    try:
+        ensure_schema()
+        _schema_ready = True
+    except Exception:
+        _schema_ready = False
 
 @app.get("/")
 def ping():
+    _ensure_schema_safe()
     return {"ok": True, "service": "webhook"}
 
 def _today_local(chat_id: int) -> date:
@@ -26,15 +38,13 @@ def _parse_names(text: str) -> List[str]:
     return [p for p in parts if p]
 
 async def _send_tournaments_menu(chat_id: int):
-    # Собираем турниры на сегодня и показываем inline-кнопки
+    _ensure_schema_safe()
     async with httpx.AsyncClient() as client:
         events = await ss.events_by_date(client, _today_local(chat_id))
     tours = ss.group_tournaments(events)
     if not tours:
         await send_message(chat_id, "Сегодня турниров нет или расписание недоступно.")
         return
-
-    # Текст-список (нумерация) + кнопки
     lines = ["Выберите турнир на сегодня:"]
     keyboard = []
     for i, t in enumerate(tours, 1):
@@ -46,7 +56,7 @@ async def _send_tournaments_menu(chat_id: int):
     await send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
 async def _send_matches_menu(chat_id: int, tour_id: str):
-    # Показать матчи выбранного турнира
+    _ensure_schema_safe()
     async with httpx.AsyncClient() as client:
         events = await ss.events_by_date(client, _today_local(chat_id))
     tours = ss.group_tournaments(events)
@@ -67,7 +77,6 @@ async def _send_matches_menu(chat_id: int, tour_id: str):
             "callback_data": f"watch_ev:{eid}"
         }])
 
-    # Кнопка «следить за всем турниром»
     keyboard.append([{
         "text": "✅ Следить за ВСЕМИ матчами турнира",
         "callback_data": f"watch_tour:{tour_id}"
@@ -77,6 +86,7 @@ async def _send_matches_menu(chat_id: int, tour_id: str):
 
 @app.post("/")
 async def webhook(req: Request):
+    _ensure_schema_safe()
     if WEBHOOK_SECRET:
         token = req.headers.get("x-telegram-bot-api-secret-token")
         if token != WEBHOOK_SECRET:
@@ -84,7 +94,7 @@ async def webhook(req: Request):
 
     upd = await req.json()
 
-    # --- обработка callback_query ---
+    # --- callback_query ---
     if "callback_query" in upd:
         cq = upd["callback_query"]
         cq_id = cq.get("id")
@@ -101,7 +111,6 @@ async def webhook(req: Request):
         if data.startswith("watch_ev:"):
             await answer_callback_query(cq_id, "Ок, добавил матч.")
             eid = data.split(":", 1)[1]
-            # Найдём матч и добавим обоих игроков в список на сегодня
             async with httpx.AsyncClient() as client:
                 events = await ss.events_by_date(client, _today_local(chat_id))
             ev = next((e for e in events if ss.event_id_of(e) == eid), None)
@@ -128,7 +137,7 @@ async def webhook(req: Request):
                 cnt = 0
                 seen = set()
                 for ev in tour["events"]:
-                    for nm in [ (ev.get("homeTeam") or {}).get("name",""), (ev.get("awayTeam") or {}).get("name","") ]:
+                    for nm in [(ev.get("homeTeam") or {}).get("name",""), (ev.get("awayTeam") or {}).get("name","")]:
                         if nm and nm not in seen:
                             add_watch(chat_id, nm, "sofascore", today)
                             seen.add(nm)
@@ -138,7 +147,6 @@ async def webhook(req: Request):
                 await send_message(chat_id, "Турнир уже недоступен.")
             return {"ok": True}
 
-        # неизвестные callback'и игнорируем
         await answer_callback_query(cq_id)
         return {"ok": True}
 
@@ -187,7 +195,6 @@ async def webhook(req: Request):
         await send_message(chat_id, f"Ок, очистил список ({n} записей).")
         return {"ok": True}
 
-    # старые команды /watch, /add, /remove оставлены как были (если нужны)
     if text.startswith("/watch"):
         toks = text.split(maxsplit=1)
         if len(toks) < 2:
