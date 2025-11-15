@@ -28,7 +28,7 @@ __all__ = [
     "add_player_alias",
     "get_player_ru",
     "player_ru",
-    "ru_name_for",
+    "_for",
     # watch-лист
     "add_watch",
     "add_watches",
@@ -189,17 +189,27 @@ def player_ru(name_en: str) -> Optional[str]:
 def _has_cyrillic(s: str) -> bool:
     return any("А" <= ch <= "я" or ch in ("ё", "Ё") for ch in s)
 
-def ru_name_for(name: str) -> Optional[str]:
+def ru_name_for(name: str) -> tuple[Optional[str], bool]:
     """
-    Если на входе уже кириллица — считаем это готовым русским именем.
-    Иначе пытаемся найти русское имя по английскому ключу.
+    Возвращает (ru_name_or_none, known_bool).
+
+    known_bool = True, когда:
+      - пользователь ввёл уже кириллицу (считаем, что это готовая запись)
+      - или в таблице player_names есть сохранённый RU-алиас для EN-имени
+
+    known_bool = False, когда маппинга ещё нет (нужно спросить у пользователя).
     """
     if not name:
-        return None
-    name = name.strip()
-    if _has_cyrillic(name):
-        return name.replace("Ё", "Е").replace("ё", "е")
-    return get_player_ru(name)
+        return None, False
+
+    s = name.strip()
+    # Если уже кириллица — возвращаем как есть (нормализовав Ё→Е)
+    if any("А" <= ch <= "я" or ch in ("ё", "Ё") for ch in s):
+        return s.replace("Ё", "Е").replace("ё", "е"), True
+
+    # Иначе ищем в БД RU-алиас для EN
+    ru = get_player_ru(s)
+    return (ru, True) if ru else (None, False)
 
 # ----------- WATCH LIST -----------
 
