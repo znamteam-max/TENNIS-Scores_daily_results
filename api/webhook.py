@@ -32,10 +32,6 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 DEFAULT_TZ = os.getenv("APP_TZ", "Europe/Helsinki")
 
-if not BOT_TOKEN:
-    # не падаем — но отвечать в ТГ не сможем
-    pass
-
 
 # ------------- Telegram I/O -------------
 
@@ -107,10 +103,23 @@ def _auto_ru_guess(en_full: str) -> str:
     }
     return m.get(en_full, en_full)
 
+def _safe_ru_name_for(en_full: str) -> Tuple[Optional[str], bool]:
+    """
+    ru_name_for может вернуть None — здесь нормализуем в (None, False),
+    чтобы не падать на распаковке.
+    """
+    try:
+        res = ru_name_for(en_full)
+        if isinstance(res, tuple) and len(res) == 2:
+            return res[0], bool(res[1])
+    except Exception:
+        pass
+    return None, False
+
 def _format_list_with_ru(items: List[str]) -> str:
     lines = []
     for it in items:
-        ru, known = ru_name_for(it)
+        ru, known = _safe_ru_name_for(it)
         lines.append(f"• {ru if (ru and known) else it}")
     return "\n".join(lines) if lines else "—"
 
@@ -160,21 +169,16 @@ async def _send_start(chat_id: int):
         return
 
     # минимальное групирование по турнирам (без категорий 15/25/50 если есть)
-    by_t = {}
+    by_t: Dict[str, List[Dict[str, Any]]] = {}
     for ev in events:
-        cat_id = (
-            (((ev.get("tournament") or {}).get("category") or {}).get("id"))
-            if isinstance(ev, dict) else None
-        )
+        if not isinstance(ev, dict):
+            continue
+        cat_id = (((ev.get("tournament") or {}).get("category") or {}).get("id"))
         if cat_id in (15, 25, 50):
             continue
-        tname = None
-        if isinstance(ev, dict):
-            t = ev.get("tournament") or {}
-            ut = t.get("uniqueTournament") or {}
-            tname = ut.get("name") or t.get("name")
-        if not tname:
-            tname = "Турнир"
+        t = ev.get("tournament") or {}
+        ut = t.get("uniqueTournament") or {}
+        tname = ut.get("name") or t.get("name") or "Турнир"
         by_t.setdefault(tname, []).append(ev)
 
     parts = [f"Турниры сегодня ({ds.isoformat()}):"]
@@ -204,10 +208,10 @@ async def _handle_watch(chat_id: int, payload: str):
 
     for nm in names:
         en_full = _canon_en(nm)
-        ru, known = ru_name_for(en_full)
+        ru, known = _safe_ru_name_for(en_full)
         if known and ru:
             # алиас известен → просто добавляем
-            add_watch(chat_id, en_full, today)  # ВАЖНО: правильный порядок
+            add_watch(chat_id, today, en_full)  # <-- ВАЖНО: (chat_id, day, name_en)
             added.append(ru)
         else:
             # спрашиваем у юзера
@@ -248,7 +252,7 @@ async def _handle_text_message(chat_id: int, text: str) -> bool:
         return True
 
     set_alias(pending, ru)
-    add_watch(chat_id, pending, _today(chat_id))
+    add_watch(chat_id, _today(chat_id), pending)  # <-- ВАЖНО: (chat_id, day, name_en)
     await tg_send_message(
         chat_id,
         f"Сохранил: *{ru}* (EN: {pending}).\n/list — показать список",
