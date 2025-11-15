@@ -1,15 +1,15 @@
 {
   "functions": {
-    "api/**/*.py": {
-      "runtime": "python3.11"
-    }
+    "api/**/*.py": { "runtime": "python3.11" }
   },
   "routes": [
-    { "src": "/api/webhook", "dest": "/api/webhook.py" },
-    { "src": "/api/webhook/", "dest": "/api/webhook.py" },
-    { "src": "/api/hello", "dest": "/api/hello.py" },
-    { "src": "/api/hello/(.*)", "dest": "/api/hello.py" },
-    { "src": "/api/dbcheck", "dest": "/api/dbcheck.py" },
-    { "src": "/api/dbcheck/", "dest": "/api/dbcheck.py" }
+    { "src": "/api/webhook", "dest": "api/webhook.py" },
+    { "src": "/api/webhook/", "dest": "api/webhook.py" },
+
+    { "src": "/api/hello", "dest": "api/hello.py" },
+    { "src": "/api/hello/(.*)", "dest": "api/hello.py" },
+
+    { "src": "/api/dbcheck", "dest": "api/dbcheck.py" },
+    { "src": "/api/dbcheck/", "dest": "api/dbcheck.py" }
   ]
 }
