@@ -1,0 +1,770 @@
+diff --git a/vercel.json b/vercel.json
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/vercel.json
+@@ -0,0 +1,20 @@
++{
++  // Минимальная корректная конфигурация под Python-функции
++  // Если у вас снова появится ошибка "Function Runtimes must have a valid version",
++  // временно УДАЛИТЕ этот файл и задеплойте — Vercel сам подхватит python.
++  "functions": {
++    "api/*.py": {
++      "runtime": "python3.11",
++      "memory": 1024,
++      "maxDuration": 10
++    }
++  },
++  "trailingSlash": false,
++  "cleanUrls": true,
++  "ignoreCommand": "true",
++  "github": {
++    "silent": true
++  }
++}
++
+diff --git a/requirements.txt b/requirements.txt
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/requirements.txt
+@@ -0,0 +1,8 @@
++fastapi==0.115.4
++uvicorn==0.31.1
++httpx==0.27.2
++h2==4.1.0
++psycopg[binary]==3.2.3
++python-dateutil==2.9.0.post0
++orjson==3.10.7
++python-dotenv==1.0.1
+diff --git a/api/hello.py b/api/hello.py
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/api/hello.py
+@@ -0,0 +1,35 @@
++from __future__ import annotations
++
++import os
++from fastapi import FastAPI
++from fastapi.responses import JSONResponse
++
++app = FastAPI(title="hello")
++handler = app  # Vercel ищет app/handler
++
++
++@app.get("/")
++def hello_root():
++    return JSONResponse({"ok": True, "service": "hello", "path": "/api/hello/"})
++
++
++@app.get("/debug-env")
++def debug_env():
++    keys = ("POSTGRES_URL", "APP_TZ", "WEBHOOK_SECRET")
++    env = {k: os.getenv(k, "") for k in keys}
++    return JSONResponse({"ok": True, "env": env})
+diff --git a/api/dbcheck.py b/api/dbcheck.py
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/api/dbcheck.py
+@@ -0,0 +1,28 @@
++from __future__ import annotations
++
++from fastapi import FastAPI
++from fastapi.responses import JSONResponse
++
++from db_pg import ensure_schema, ping_db
++
++app = FastAPI(title="dbcheck")
++handler = app
++
++
++@app.get("/")
++def dbcheck_root():
++    try:
++        ensure_schema()
++        ok = ping_db()
++        return JSONResponse({"ok": True, "service": "dbcheck", "path": "/api/dbcheck", "db": "connected" if ok else "fail"})
++    except Exception as e:
++        return JSONResponse({"ok": False, "service": "dbcheck", "error": str(e)}, status_code=500)
+diff --git a/api/webhook.py b/api/webhook.py
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/api/webhook.py
+@@ -0,0 +1,420 @@
++from __future__ import annotations
++
++import os
++import datetime as dt
++from typing import Optional, List, Dict, Any
++from zoneinfo import ZoneInfo
++
++from fastapi import FastAPI, Request, HTTPException
++from fastapi.responses import JSONResponse
++import httpx
++
++from db_pg import (
++    ensure_schema,
++    get_tz, set_tz,
++    add_watch, add_watches, remove_watch, list_today,
++    ru_name_for, set_alias,
++    set_pending_alias, consume_pending_alias,
++    get_events_cache,
++)
++
++app = FastAPI(title="telegram-webhook")
++handler = app  # для Vercel
++
++# ---------- env ----------
++BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
++WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
++DEFAULT_TZ = os.getenv("APP_TZ", "Europe/London")
++
++# ---------- Telegram I/O ----------
++def _tg_api(method: str) -> str:
++    return f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
++
++
++async def tg_send_message(chat_id: int, text: str, **kwargs) -> None:
++    if not BOT_TOKEN:
++        return
++    payload = {"chat_id": chat_id, "text": text}
++    payload.update(kwargs)
++    async with httpx.AsyncClient(timeout=15.0) as c:
++        await c.post(_tg_api("sendMessage"), json=payload)
++
++
++async def tg_answer_callback_query(cb_id: str, text: Optional[str] = None, show_alert: bool = False) -> None:
++    if not BOT_TOKEN:
++        return
++    payload = {"callback_query_id": cb_id, "show_alert": show_alert}
++    if text:
++        payload["text"] = text
++    async with httpx.AsyncClient(timeout=15.0) as c:
++        await c.post(_tg_api("answerCallbackQuery"), json=payload)
++
++
++# ---------- helpers ----------
++KNOWN_EN = {
++    "sinner": "Jannik Sinner",
++    "zverev": "Alexander Zverev",
++    "rublev": "Andrey Rublev",
++    "medvedev": "Daniil Medvedev",
++    "djokovic": "Novak Djokovic",
++    "alcaraz": "Carlos Alcaraz",
++    "musetti": "Lorenzo Musetti",
++    "de minaur": "Alex de Minaur",
++    "deminour": "Alex de Minaur",
++    "tsitsipas": "Stefanos Tsitsipas",
++    "wawrinka": "Stan Wawrinka",
++}
++
++
++def _canon_en(token: str) -> str:
++    t = token.strip()
++    k = " ".join(t.lower().split())
++    return KNOWN_EN.get(k, t)
++
++
++def _tz_for(chat_id: int) -> ZoneInfo:
++    try:
++        return ZoneInfo(get_tz(chat_id) or DEFAULT_TZ)
++    except Exception:
++        return ZoneInfo(DEFAULT_TZ)
++
++
++def _today(chat_id: int) -> dt.date:
++    return dt.datetime.now(_tz_for(chat_id)).date()
++
++
++def _auto_ru_guess(en_full: str) -> str:
++    m = {
++        "Jannik Sinner": "Янник Синнер",
++        "Alexander Zverev": "Александр Зверев",
++        "Andrey Rublev": "Андрей Рублёв",
++        "Daniil Medvedev": "Даниил Медведев",
++        "Novak Djokovic": "Новак Джокович",
++        "Carlos Alcaraz": "Карлос Алькарас",
++        "Lorenzo Musetti": "Лоренцо Музетти",
++        "Alex de Minaur": "Алекс де Минор",
++        "Stefanos Tsitsipas": "Стефанос Циципас",
++        "Stan Wawrinka": "Стан Вавринка",
++    }
++    return m.get(en_full, en_full)
++
++
++def _format_list_with_ru(items: List[str]) -> str:
++    lines = []
++    for it in items:
++        ru, known = ru_name_for(it)
++        lines.append(f"• {ru if (ru and known) else it}")
++    return "\n".join(lines) if lines else "—"
++
++
++# ---------- UI blocks ----------
++async def _send_watches_list(chat_id: int):
++    day = _today(chat_id)
++    arr = list_today(chat_id, day)
++    if not arr:
++        await tg_send_message(
++            chat_id,
++            "Сегодня (%s):\n—\n\nДобавьте игроков: /watch Rublev, Musetti" % day.isoformat()
++        )
++        return
++
++    buttons = [[{"text": f"Удалить {it}", "callback_data": f"rm:{it}"}] for it in arr]
++    await tg_send_message(
++        chat_id,
++        "Сегодня (%s):\n%s\n\nХотите исправить список?" % (day.isoformat(), _format_list_with_ru(arr)),
++        reply_markup={"inline_keyboard": buttons}
++    )
++
++
++async def _send_start(chat_id: int):
++    ds = _today(chat_id)
++    data = get_events_cache(ds)
++    if not data:
++        await tg_send_message(
++            chat_id,
++            "Расписание сегодня пока недоступно.\nКэш пополнится GitHub-воркером.\n\n"
++            "Можно добавить игроков вручную: /watch Rublev, Musetti."
++        )
++        return
++
++    events = []
++    if isinstance(data, dict):
++        events = data.get("events") or data.get("list") or []
++
++    if not events:
++        await tg_send_message(
++            chat_id,
++            "На сегодня список пуст. Нажмите /start позже или используйте /watch имя."
++        )
++        return
++
++    by_t = {}
++    for ev in events:
++        # отсекаем категории 15/25/50
++        cat_id = (
++            (((ev.get("tournament") or {}).get("category") or {}).get("id"))
++            if isinstance(ev, dict) else None
++        )
++        if cat_id in (15, 25, 50):
++            continue
++        tname = None
++        if isinstance(ev, dict):
++            t = ev.get("tournament") or {}
++            ut = t.get("uniqueTournament") or {}
++            tname = ut.get("name") or t.get("name")
++        if not tname:
++            tname = "Турнир"
++        by_t.setdefault(tname, []).append(ev)
++
++    parts = [f"Турниры сегодня ({ds.isoformat()}):"]
++    for tn, evs in by_t.items():
++        parts.append(f"\n• {tn} — {len(evs)} матч(ей)")
++    parts.append("\nДобавьте игроков, чтобы бот подсвечивал их матчи: /watch Sinner")
++    await tg_send_message(chat_id, "\n".join(parts))
++
++
++# ---------- commands ----------
++async def _handle_watch(chat_id: int, payload: str):
++    """
++    /watch <имя1, имя2 ...>
++    """
++    names = [x.strip() for x in (payload or "").split(",") if x.strip()]
++    if not names:
++        await tg_send_message(chat_id, "Формат: /watch ИмяИгрока (или несколько через запятую)")
++        return
++
++    added, asked = [], []
++    today = _today(chat_id)
++
++    for nm in names:
++        en_full = _canon_en(nm)
++        pair = ru_name_for(en_full)
++        if pair is None:
++            # вообще нет записи — спросим RU и сохраним pending
++            suggestion = _auto_ru_guess(en_full)
++            set_pending_alias(chat_id, en_full)
++            asked.append(en_full)
++            await tg_send_message(
++                chat_id,
++                f"Как записать *{en_full}* по-русски?\n\n"
++                f"Вариант: _{suggestion}_\n"
++                f"Или пришлите свой вариант одним сообщением.",
++                parse_mode="Markdown"
++            )
++            continue
++
++        ru, known = pair
++        if known and ru:
++            add_watch(chat_id, en_full, today)  # порядок: chat_id, name_en, day
++            added.append(ru)
++        else:
++            suggestion = _auto_ru_guess(en_full)
++            set_pending_alias(chat_id, en_full)
++            asked.append(en_full)
++            await tg_send_message(
++                chat_id,
++                f"Как записать *{en_full}* по-русски?\n\n"
++                f"Вариант: _{suggestion}_\n"
++                f"Или пришлите свой вариант одним сообщением.",
++                parse_mode="Markdown"
++            )
++
++    parts = []
++    if added:
++        parts.append("Добавил:\n" + "\n".join(f"• {x}" for x in added))
++    if asked:
++        parts.append("\nЖду русскую запись для:\n" + "\n".join(f"• {x}" for x in asked))
++    if parts:
++        parts.append("\n/list — показать список на сегодня")
++        await tg_send_message(chat_id, "\n".join(parts))
++
++
++async def _handle_text_message(chat_id: int, text: str) -> bool:
++    if text.startswith("/"):
++        return False
++    pending = consume_pending_alias(chat_id)
++    if not pending:
++        return False
++    ru = text.strip()
++    if not ru:
++        await tg_send_message(chat_id, "Пустой ответ. Пришлите, как записать имя по-русски.")
++        return True
++    set_alias(pending, ru)
++    add_watch(chat_id, pending, _today(chat_id))
++    await tg_send_message(
++        chat_id,
++        f"Сохранил: *{ru}* (EN: {pending}).\n/list — показать список",
++        parse_mode="Markdown"
++    )
++    return True
++
++
++# ---------- routing ----------
++@app.get("/")
++async def health() -> JSONResponse:
++    return JSONResponse({"ok": True, "service": "webhook", "path": "/api/webhook"})
++
++
++@app.post("/")
++async def webhook_abs(req: Request) -> JSONResponse:
++    if WEBHOOK_SECRET:
++        if req.headers.get("x-telegram-bot-api-secret-token") != WEBHOOK_SECRET:
++            raise HTTPException(status_code=403, detail="forbidden")
++
++    ensure_schema()
++
++    try:
++        payload = await req.json()
++    except Exception:
++        payload = {}
++
++    cb = payload.get("callback_query")
++    if cb:
++        chat_id = cb["message"]["chat"]["id"]
++        data = cb.get("data") or ""
++        if data.startswith("rm:"):
++            name = data[3:]
++            removed = remove_watch(chat_id, _today(chat_id), name)
++            await tg_answer_callback_query(cb.get("id"), "Удалено" if removed else "Не найдено")
++            await _send_watches_list(chat_id)
++            return JSONResponse({"ok": True, "action": "rm"})
++        if data.startswith("mkpost:"):
++            # Заготовка поста — stub
++            await tg_answer_callback_query(cb.get("id"))
++            await tg_send_message(chat_id, "Шаблон поста: *Матч завершён.* Счёт: 6-4 4-6 7-6(5).", parse_mode="Markdown")
++            return JSONResponse({"ok": True, "action": "mkpost"})
++
++        await tg_answer_callback_query(cb.get("id"))
++        return JSONResponse({"ok": True, "action": "noop"})
++
++    msg = payload.get("message") or payload.get("edited_message")
++    if not msg:
++        return JSONResponse({"ok": True, "ignored": True})
++
++    chat_id = msg["chat"]["id"]
++    text = msg.get("text") or ""
++
++    if await _handle_text_message(chat_id, text):
++        return JSONResponse({"ok": True})
++
++    if text.startswith("/"):
++        parts = text.split(maxsplit=1)
++        cmd = parts[0].lstrip("/").lower()
++        arg = parts[1] if len(parts) > 1 else ""
++
++        if cmd in ("start", "menu"):
++            await _send_start(chat_id)
++            return JSONResponse({"ok": True})
++        if cmd == "list":
++            await _send_watches_list(chat_id)
++            return JSONResponse({"ok": True})
++        if cmd == "watch":
++            await _handle_watch(chat_id, arg)
++            return JSONResponse({"ok": True})
++        if cmd == "settz":
++            tz = (arg or "").strip()
++            if not tz:
++                await tg_send_message(chat_id, f"Текущая TZ: {get_tz(chat_id)}. Пример: /settz Europe/Moscow")
++            else:
++                try:
++                    ZoneInfo(tz)
++                    set_tz(chat_id, tz)
++                    await tg_send_message(chat_id, f"TZ обновлена: {tz}")
++                except Exception:
++                    await tg_send_message(chat_id, "Некорректная TZ. Пример: Europe/Moscow")
++            return JSONResponse({"ok": True})
++
++        await tg_send_message(chat_id, "Команда не распознана. Доступно: /start, /list, /watch, /settz")
++        return JSONResponse({"ok": True})
++
++    return JSONResponse({"ok": True})
+diff --git a/db_pg.py b/db_pg.py
+new file mode 100644
+index 0000000..6666666
+--- /dev/null
++++ b/db_pg.py
+@@ -0,0 +1,330 @@
++from __future__ import annotations
++
++import os
++import json
++import datetime as dt
++from typing import Optional, List, Tuple, Dict, Any
++
++import psycopg
++
++POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
++
++
++def _conn():
++    if not POSTGRES_URL:
++        raise RuntimeError("POSTGRES_URL is not set")
++    return psycopg.connect(POSTGRES_URL, autocommit=True)
++
++
++def ensure_schema() -> None:
++    sql = """
++    create table if not exists chats (
++        chat_id bigint primary key,
++        tz text not null default 'Europe/London'
++    );
++    create table if not exists name_aliases (
++        en_full text primary key,
++        ru text not null
++    );
++    create table if not exists pending_alias (
++        chat_id bigint primary key,
++        en_full text not null
++    );
++    create table if not exists watches (
++        chat_id bigint not null,
++        day date not null,
++        name_en text not null,
++        primary key (chat_id, day, name_en)
++    );
++    create table if not exists events_cache (
++        ds date primary key,
++        data jsonb not null,
++        updated_at timestamptz not null default now()
++    );
++    """
++    with _conn() as con:
++        with con.cursor() as cur:
++            cur.execute(sql)
++
++
++def ping_db() -> bool:
++    with _conn() as con:
++        with con.cursor() as cur:
++            cur.execute("select 1")
++            return True
++
++
++# ---------- TZ ----------
++def get_tz(chat_id: int) -> Optional[str]:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("select tz from chats where chat_id=%s", (chat_id,))
++        row = cur.fetchone()
++        return row[0] if row else None
++
++
++def set_tz(chat_id: int, tz: str) -> None:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("""
++            insert into chats (chat_id, tz)
++            values (%s, %s)
++            on conflict (chat_id) do update set tz=excluded.tz
++        """, (chat_id, tz))
++
++
++# ---------- aliases ----------
++def norm_key(s: str) -> str:
++    return " ".join((s or "").strip().lower().split())
++
++
++def set_alias(en_full: str, ru: str) -> None:
++    en_full = en_full.strip()
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("""
++            insert into name_aliases (en_full, ru)
++            values (%s, %s)
++            on conflict (en_full) do update set ru=excluded.ru
++        """, (en_full, ru.strip()))
++
++
++def ru_name_for(en_full: str) -> Optional[Tuple[str, bool]]:
++    """
++    Возвращает (ru, known) или None если вообще нет записи об этом EN-имени.
++    known=True если RU-алиас записан, False если записи нет.
++    """
++    en_full = en_full.strip()
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("select ru from name_aliases where en_full=%s", (en_full,))
++        row = cur.fetchone()
++        if row:
++            return (row[0], True)
++        # нет RU — значит известен только EN? вернём признак, что known=False
++        return ("", False)
++
++
++def set_pending_alias(chat_id: int, en_full: str) -> None:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("""
++            insert into pending_alias (chat_id, en_full)
++            values (%s, %s)
++            on conflict (chat_id) do update set en_full=excluded.en_full
++        """, (chat_id, en_full.strip()))
++
++
++def consume_pending_alias(chat_id: int) -> Optional[str]:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("select en_full from pending_alias where chat_id=%s", (chat_id,))
++        row = cur.fetchone()
++        if not row:
++            return None
++        en_full = row[0]
++        cur.execute("delete from pending_alias where chat_id=%s", (chat_id,))
++        return en_full
++
++
++# ---------- watches ----------
++def add_watch(chat_id: int, name_en: str, day: dt.date) -> None:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("""
++            insert into watches (chat_id, day, name_en)
++            values (%s, %s, %s)
++            on conflict do nothing
++        """, (chat_id, day, name_en.strip()))
++
++
++def add_watches(chat_id: int, day: dt.date, names_en: List[str]) -> int:
++    cnt = 0
++    with _conn() as con, con.cursor() as cur:
++        for raw in names_en:
++            name_en = (raw or "").strip()
++            if not name_en:
++                continue
++            cur.execute("""
++                insert into watches (chat_id, day, name_en)
++                values (%s, %s, %s)
++                on conflict do nothing
++            """, (chat_id, day, name_en))
++            cnt += 1
++    return cnt
++
++
++def remove_watch(chat_id: int, day: dt.date, name_en: str) -> bool:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("delete from watches where chat_id=%s and day=%s and name_en=%s",
++                    (chat_id, day, name_en.strip()))
++        return cur.rowcount > 0
++
++
++def list_today(chat_id: int, day: dt.date) -> List[str]:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("""
++            select name_en from watches where chat_id=%s and day=%s order by name_en
++        """, (chat_id, day))
++        return [r[0] for r in cur.fetchall()]
++
++
++# ---------- events cache ----------
++def set_events_cache(ds: dt.date, data: Dict[str, Any]) -> None:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("""
++            insert into events_cache (ds, data, updated_at)
++            values (%s, %s::jsonb, now())
++            on conflict (ds) do update set data=excluded.data, updated_at=now()
++        """, (ds, json.dumps(data)))
++
++
++def get_events_cache(ds: dt.date) -> Optional[Dict[str, Any]]:
++    with _conn() as con, con.cursor() as cur:
++        cur.execute("select data from events_cache where ds=%s", (ds,))
++        row = cur.fetchone()
++        return row[0] if row else None
++
+diff --git a/providers/sofascore.py b/providers/sofascore.py
+new file mode 100644
+index 0000000..7777777
+--- /dev/null
++++ b/providers/sofascore.py
+@@ -0,0 +1,115 @@
++from __future__ import annotations
++
++import datetime as dt
++import random
++import httpx
++from typing import Dict, Any
++
++BASES = [
++    "https://api.sofascore.com/api/v1",
++    "https://www.sofascore.com/api/v1",
++]
++
++UAS = [
++    # пара референсных UA для обхода простых 403-challenge
++    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
++    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
++]
++
++HEADERS = {
++    "Accept": "application/json, text/plain, */*",
++    "Accept-Language": "en-US,en;q=0.9",
++    "Referer": "https://www.sofascore.com/",
++    "Origin": "https://www.sofascore.com",
++    "Connection": "keep-alive",
++}
++
++
++async def _get_json(client: httpx.AsyncClient, url: str) -> Dict[str, Any]:
++    h = dict(HEADERS)
++    h["User-Agent"] = random.choice(UAS)
++    r = await client.get(url, headers=h, timeout=20.0)
++    r.raise_for_status()
++    try:
++        return r.json()
++    except Exception:
++        return {}
++
++
++def _ds(d: dt.date) -> str:
++    return d.isoformat()
++
++
++async def events_by_date(client: httpx.AsyncClient, d: dt.date) -> Dict[str, Any]:
++    """
++    Возвращает {"events":[...]} или пустой словарь.
++    Делает ретраи по двум базам и несколько разных путей в случае 403.
++    """
++    paths = [
++        f"/sport/tennis/scheduled-events/{_ds(d)}",
++        f"/sport/tennis/events/{_ds(d)}",  # запасной
++    ]
++    last_exc = None
++    for base in BASES:
++        for path in paths:
++            try:
++                data = await _get_json(client, f"{base}{path}")
++                if data:
++                    return data
++            except httpx.HTTPError as e:
++                last_exc = e
++                continue
++    # как минимум пробуем live как запасной источник
++    try:
++        data = await _get_json(client, f"{BASES[0]}/sport/tennis/events/live")
++        if data:
++            return data
++    except Exception:
++        pass
++    if last_exc:
++        raise last_exc
++    return {}
+diff --git a/gha_worker.py b/gha_worker.py
+new file mode 100644
+index 0000000..8888888
+--- /dev/null
++++ b/gha_worker.py
+@@ -0,0 +1,82 @@
++from __future__ import annotations
++
++import asyncio
++import os
++import datetime as dt
++from zoneinfo import ZoneInfo
++import httpx
++
++from db_pg import ensure_schema, set_events_cache
++from providers import sofascore as ss
++
++
++def _tz() -> ZoneInfo:
++    return ZoneInfo(os.getenv("APP_TZ", "Europe/London"))
++
++
++def today_local() -> dt.date:
++    return dt.datetime.now(_tz()).date()
++
++
++async def run_once() -> None:
++    ensure_schema()
++    d = today_local()
++    async with httpx.AsyncClient(http2=True, timeout=20.0) as c:
++        try:
++            data = await ss.events_by_date(c, d)
++        except Exception as e:
++            print(f"[ERR] sofascore fetch failed: {e}")
++            data = {}
++    set_events_cache(d, data or {"events": []})
++    print(f"[OK] cache updated for {d}, events={len((data or {}).get('events', []))}")
++
++
++if __name__ == "__main__":
++    asyncio.run(run_once())
+diff --git a/.github/workflows/tennis-poller.yml b/.github/workflows/tennis-poller.yml
+new file mode 100644
+index 0000000..9999999
+--- /dev/null
++++ b/.github/workflows/tennis-poller.yml
+@@ -0,0 +1,50 @@
++name: TENNIS poller (cache Sofascore)
++
++on:
++  workflow_dispatch: {}
++  schedule:
++    # каждые 30 минут
++    - cron: "*/30 * * * *"
++
++permissions:
++  contents: read
++
++jobs:
++  poll:
++    runs-on: ubuntu-latest
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Set up Python
++        uses: actions/setup-python@v5
++        with:
++          python-version: "3.11"
++
++      - name: Install deps
++        run: |
++          python -m pip install --upgrade pip
++          pip install -r requirements.txt
++
++      - name: Run poller
++        env:
++          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
++          APP_TZ: Europe/London
++        run: |
++          python gha_worker.py
