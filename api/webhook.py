@@ -1,9 +1,19 @@
-# api/webhook.py — ASGI webhook с категориями турниров и быстрым watch
 from __future__ import annotations
-import os, json, datetime as dt, math, urllib.parse
+
+import os, datetime as dt, json
 from typing import Optional, List, Dict, Any, Tuple
 from zoneinfo import ZoneInfo
-import httpx
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+
+# httpx fallback (если вдруг на Vercel его нет — используем stdlib)
+try:
+    import httpx
+    _HAVE_HTTPX = True
+except Exception:
+    import urllib.request, urllib.error
+    _HAVE_HTTPX = False
 
 from db_pg import (
     ensure_schema,
@@ -14,48 +24,57 @@ from db_pg import (
     get_events_cache,
 )
 
+app = FastAPI(title="telegram-webhook")
+handler = app
+
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 DEFAULT_TZ = os.getenv("APP_TZ", "Europe/London")
 
-# ---------------- Telegram I/O ----------------
+# ---------- Telegram I/O ----------
+def _tg_api(method: str) -> str:
+    return f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
 
-async def tg_send(chat_id: int, text: str, **kwargs):
-    if not BOT_TOKEN:
-        return
+async def _http_post_json(url: str, payload: Dict[str, Any]) -> None:
+    if _HAVE_HTTPX:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            await c.post(url, json=payload)
+    else:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                     headers={"Content-Type":"application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=15)
+        except urllib.error.URLError:
+            pass
+
+async def tg_send_message(chat_id: int, text: str, **kwargs) -> None:
+    if not BOT_TOKEN: return
     payload = {"chat_id": chat_id, "text": text}
     payload.update(kwargs)
-    async with httpx.AsyncClient(timeout=15.0) as c:
-        await c.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json=payload)
+    await _http_post_json(_tg_api("sendMessage"), payload)
 
-async def tg_answer(cb_id: str, text: Optional[str] = None, show_alert: bool = False):
-    if not BOT_TOKEN:
-        return
+async def tg_answer_callback_query(cb_id: str, text: Optional[str] = None, show_alert: bool = False) -> None:
+    if not BOT_TOKEN: return
     payload = {"callback_query_id": cb_id, "show_alert": show_alert}
-    if text:
-        payload["text"] = text
-    async with httpx.AsyncClient(timeout=15.0) as c:
-        await c.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json=payload)
+    if text: payload["text"] = text
+    await _http_post_json(_tg_api("answerCallbackQuery"), payload)
 
-# ---------------- helpers ----------------
+# ---------- helpers ----------
+KNOWN_EN = {
+    "sinner": "Jannik Sinner",
+    "zverev": "Alexander Zverev",
+    "rublev": "Andrey Rublev",
+    "medvedev": "Daniil Medvedev",
+    "djokovic": "Novak Djokovic",
+    "alcaraz": "Carlos Alcaraz",
+    "musetti": "Lorenzo Musetti",
+    "de minaur": "Alex de Minaur",
+    "deminour": "Alex de Minaur",
+    "tsitsipas": "Stefanos Tsitsipas",
+    "wawrinka": "Stan Wawrinka",
+}
 
 def _canon_en(token: str) -> str:
-    KNOWN_EN = {
-        "sinner": "Jannik Sinner",
-        "зверев": "Alexander Zverev",
-        "zverev": "Alexander Zverev",
-        "rublev": "Andrey Rublev",
-        "рублев": "Andrey Rublev",
-        "medvedev": "Daniil Medvedev",
-        "джокович": "Novak Djokovic",
-        "djokovic": "Novak Djokovic",
-        "alcaraz": "Carlos Alcaraz",
-        "musetti": "Lorenzo Musetti",
-        "de minaur": "Alex de Minaur",
-        "деминор": "Alex de Minaur",
-        "tsitsipas": "Stefanos Tsitsipas",
-        "wawrinka": "Stan Wawrinka",
-    }
     t = token.strip()
     k = " ".join(t.lower().split())
     return KNOWN_EN.get(k, t)
@@ -66,11 +85,8 @@ def _tz_for(chat_id: int) -> ZoneInfo:
     except Exception:
         return ZoneInfo(DEFAULT_TZ)
 
-def _now(chat_id: int) -> dt.datetime:
-    return dt.datetime.now(_tz_for(chat_id))
-
 def _today(chat_id: int) -> dt.date:
-    return _now(chat_id).date()
+    return dt.datetime.now(_tz_for(chat_id)).date()
 
 def _auto_ru_guess(en_full: str) -> str:
     m = {
@@ -88,197 +104,144 @@ def _auto_ru_guess(en_full: str) -> str:
     return m.get(en_full, en_full)
 
 def _format_list_with_ru(items: List[str]) -> str:
-    lines = []
+    out = []
     for it in items:
         pair = ru_name_for(it)
-        if pair and pair[0] and pair[1]:
-            lines.append(f"• {pair[0]}")
-        else:
-            lines.append(f"• {it}")
-    return "\n".join(lines) if lines else "—"
+        if pair is None:
+            out.append(f"• {it}")
+            continue
+        ru, known = pair
+        out.append(f"• {ru if (ru and known) else it}")
+    return "\n".join(out) if out else "—"
 
-# --- Sofascore event utils (robust keys) ---
-
-def _get(ev: Dict[str, Any], *keys, default=None):
-    cur = ev
-    for k in keys:
-        if not isinstance(cur, dict):
-            return default
-        cur = cur.get(k)
-    return cur if cur is not None else default
-
-def _start_ts(ev: Dict[str, Any]) -> Optional[int]:
-    for k in ("startTimestamp", "startTime", "start_ts"):
-        ts = ev.get(k)
-        if isinstance(ts, (int, float)):
-            return int(ts)
-    tblock = ev.get("time") or ev.get("start") or {}
-    if isinstance(tblock, dict):
-        for k in ("timestamp", "scheduled", "startTimestamp"):
-            ts = tblock.get(k)
-            if isinstance(ts, (int, float)):
-                return int(ts)
-    return None
-
-def _players(ev: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-    cand_pairs = [
-        ("homePlayer", "awayPlayer"),
-        ("homeCompetitor", "awayCompetitor"),
-        ("homeTeam", "awayTeam"),
-        ("player1", "player2"),
-    ]
-    def name_of(x):
-        if not isinstance(x, dict):
-            return None
-        return x.get("name") or x.get("shortName") or x.get("slug") or x.get("code")
-    for a, b in cand_pairs:
-        na, nb = name_of(ev.get(a)), name_of(ev.get(b))
-        if na and nb:
-            return na, nb
-    parts = ev.get("participants") or ev.get("competitors")
-    if isinstance(parts, list) and len(parts) >= 2:
-        na = parts[0].get("name")
-        nb = parts[1].get("name")
-        if na and nb:
-            return na, nb
-    return None, None
-
-def _tournament_id_name(ev: Dict[str, Any]) -> Tuple[str, str]:
-    t = ev.get("tournament") or {}
+# ---- раскладка по категориям/турам из кэша ----
+def _classify(ev: Dict[str, Any]) -> str:
+    t = (ev or {}).get("tournament") or {}
     ut = t.get("uniqueTournament") or {}
-    tid = str(ut.get("id") or t.get("id") or ev.get("id") or "")
-    name = (ut.get("name") or t.get("name") or "Турнир")
-    return tid or name, name
-
-def _category_name(ev: Dict[str, Any]) -> str:
-    t = ev.get("tournament") or {}
-    ut = t.get("uniqueTournament") or {}
-    cat_name = (_get(ut, "category", "name") or _get(t, "category", "name") or "").lower()
-    tname = (ut.get("name") or t.get("name") or "").lower()
-    if "challenger" in cat_name or "challenger" in tname:
+    cat = (ut.get("category") or t.get("category") or {})
+    cname = (cat.get("name") or "").lower()
+    uname = (ut.get("name") or t.get("name") or "").lower()
+    if "challenger" in uname or "challenger" in cname:
         return "Challengers"
-    if "atp" in cat_name or "atp" in tname:
+    if "atp" in cname and "challenger" not in cname:
         return "ATP"
-    return "Other"
+    return "Другие"
 
-def _catalog(events: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
-    cats = {"ATP": {}, "Challengers": {}, "Other": {}}
+def _tournament_name(ev: Dict[str, Any]) -> str:
+    t = (ev or {}).get("tournament") or {}
+    ut = t.get("uniqueTournament") or {}
+    return ut.get("name") or t.get("name") or "Турнир"
+
+def _event_players(ev: Dict[str, Any]) -> Tuple[str, str]:
+    home = ((ev or {}).get("homeTeam") or {}).get("name") or "Player A"
+    away = ((ev or {}).get("awayTeam") or {}).get("name") or "Player B"
+    return home, away
+
+def _build_category_index(events: List[Dict[str, Any]]):
+    by_cat: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"ATP":{}, "Challengers":{}, "Другие":{}}
     for ev in events:
-        cat = _category_name(ev)
-        tid, tname = _tournament_id_name(ev)
-        bucket = cats.setdefault(cat, {})
-        bucket.setdefault(tid, {"name": tname, "events": []})["events"].append(ev)
-    return cats
+        cat = _classify(ev)
+        tn = _tournament_name(ev)
+        by_cat.setdefault(cat, {}).setdefault(tn, []).append(ev)
+    return by_cat
 
-def _fmt_eta(chat_id: int, ev: Dict[str, Any]) -> str:
-    ts = _start_ts(ev)
-    if not ts:
-        return "время не указано"
-    start = dt.datetime.fromtimestamp(int(ts), _tz_for(chat_id))
-    delta = start - _now(chat_id)
-    sec = int(delta.total_seconds())
-    if sec <= -60:
-        return "уже сыгран / идёт"
-    if -60 < sec < 60:
-        return "сейчас"
-    mins = sec // 60
-    h, m = mins // 60, mins % 60
-    if h:
-        return f"через {h}ч {m:02d}м"
-    return f"через {m}м"
-
-# ---------------- UI blocks ----------------
-
-async def _send_categories(chat_id: int, ds: dt.date, events: List[Dict[str, Any]]):
-    cats = _catalog(events)
-    cnt_atp = len(cats["ATP"])
-    cnt_ch  = len(cats["Challengers"])
-    cnt_oth = len(cats["Other"])
-    txt = (
-        f"Турниры сегодня ({ds.isoformat()}):\n\n"
-        f"ATP — {cnt_atp}\n"
-        f"Challengers — {cnt_ch}\n"
-        f"Другие — {cnt_oth}\n\n"
-        f"Выберите категорию:"
+# ---------- UI blocks ----------
+async def _send_watches_list(chat_id: int):
+    day = _today(chat_id)
+    arr = list_today(chat_id, day)
+    if not arr:
+        await tg_send_message(chat_id,
+            "Сегодня (%s):\n—\n\nДобавьте игроков: /watch Rublev, Musetti" % day.isoformat()
+        )
+        return
+    buttons = [[{"text": f"Удалить {it}", "callback_data": f"rm:{it}"}] for it in arr]
+    await tg_send_message(
+        chat_id,
+        "Сегодня (%s):\n%s\n\nХотите исправить список?" % (day.isoformat(), _format_list_with_ru(arr)),
+        reply_markup={"inline_keyboard": buttons}
     )
-    kb = [[{"text": "ATP", "callback_data": "cat:ATP"}],
-          [{"text": "Challengers", "callback_data": "cat:Challengers"}],
-          [{"text": "Другие", "callback_data": "cat:Other"}]]
-    await tg_send(chat_id, txt, reply_markup={"inline_keyboard": kb})
 
-async def _send_tournaments(chat_id: int, category: str, ds: dt.date, events: List[Dict[str, Any]]):
-    cats = _catalog(events)
-    bucket = cats.get(category) or {}
-    if not bucket:
-        await tg_send(chat_id, f"В категории {category} турниров на сегодня нет.")
+async def _send_start(chat_id: int):
+    ds = _today(chat_id)
+    data = get_events_cache(ds) or {}
+    events = data.get("events") or data.get("list") or []
+    if not events:
+        await tg_send_message(
+            chat_id,
+            "Расписание на сегодня пока недоступно (источник ограничен).\n"
+            "Кэш пополнится воркером.\n\n"
+            "Можно добавить игроков вручную: /watch Sinner"
+        )
         return
-    lines = [f"{category} — турниры ({ds.isoformat()}):"]
+    by_cat = _build_category_index(events)
+    counts = {k: sum(len(v) for v in by_cat.get(k, {}).values()) for k in ("ATP","Challengers","Другие")}
+    text = (
+        f"Турниры сегодня ({ds.isoformat()}):\n"
+        f"ATP — {counts.get('ATP',0)} матч(ей)\n"
+        f"Challengers — {counts.get('Challengers',0)} матч(ей)\n"
+        f"Другие — {counts.get('Другие',0)} матч(ей)\n\n"
+        "Выберите категорию:"
+    )
+    kb = [[{"text":"ATP","callback_data":"cat:ATP"}],
+          [{"text":"Challengers","callback_data":"cat:Challengers"}],
+          [{"text":"Другие","callback_data":"cat:Другие"}]]
+    await tg_send_message(chat_id, text, reply_markup={"inline_keyboard": kb})
+
+async def _send_tournaments(chat_id: int, category: str):
+    ds = _today(chat_id)
+    data = get_events_cache(ds) or {}
+    events = data.get("events") or data.get("list") or []
+    if not events:
+        await tg_send_message(chat_id, "Пока пусто.")
+        return
+    by_cat = _build_category_index(events)
+    tours = sorted((by_cat.get(category) or {}).keys())
+    if not tours:
+        await tg_send_message(chat_id, f"В категории {category} турниров нет.")
+        return
+    kb = [[{"text": name[:64], "callback_data": f"tour:{category}:{name[:64]}"}] for name in tours[:25]]
+    await tg_send_message(chat_id, f"{category}: выберите турнир", reply_markup={"inline_keyboard": kb})
+
+async def _send_players_for_tournament(chat_id: int, category: str, tour_name: str):
+    ds = _today(chat_id)
+    data = get_events_cache(ds) or {}
+    events = data.get("events") or data.get("list") or []
+    by_cat = _build_category_index(events)
+    evs = (by_cat.get(category) or {}).get(tour_name) or []
+    if not evs:
+        await tg_send_message(chat_id, "Нет матчей.")
+        return
     kb = []
-    for tid, info in sorted(bucket.items(), key=lambda kv: kv[1]["name"]):
-        nm = info["name"]; cnt = len(info["events"])
-        lines.append(f"• {nm} — {cnt} матч(ей)")
-        kb.append([{"text": f"{nm} ({cnt})", "callback_data": f"t:{category}:{tid}"}])
-    await tg_send(chat_id, "\n".join(lines) + "\n\nВыберите турнир:", reply_markup={"inline_keyboard": kb})
+    lines = [f"{tour_name} — матчи сегодня:"]
+    for ev in evs[:40]:
+        a, b = _event_players(ev)
+        title = f"{a} vs {b}"
+        lines.append(f"• {title}")
+        # кнопка «подписаться» на обоих по отдельности
+        kb.append([{"text": f"Следить: {a}", "callback_data": f"watch:{a}"},
+                   {"text": f"Следить: {b}", "callback_data": f"watch:{b}"}])
+        # если матч завершён — добавим кнопку «сформировать пост»
+        st = (ev.get("status") or {}).get("type") or ""
+        if str(st).lower() in ("finished","ended","after overtime"):
+            kb.append([{"text": "Сформировать пост", "callback_data": f"mkpost:{a}::{b}"}])
+    await tg_send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": kb})
 
-def _uniq(seq: List[str]) -> List[str]:
-    seen = set(); out = []
-    for s in seq:
-        if s and s not in seen:
-            out.append(s); seen.add(s)
-    return out
-
-async def _send_players_for_tournament(chat_id: int, category: str, tid: str, ds: dt.date, events: List[Dict[str, Any]]):
-    cats = _catalog(events)
-    info = (cats.get(category) or {}).get(tid)
-    if not info:
-        await tg_send(chat_id, "Турнир не найден/устарел. Нажмите /start.")
-        return
-    evs = info["events"]
-    # соберём игроков
-    players: List[str] = []
-    lines = [f"{info['name']} — игроки сегодня ({ds.isoformat()}):"]
-    for ev in evs:
-        p1, p2 = _players(ev)
-        if p1: players.append(p1)
-        if p2: players.append(p2)
-    players = _uniq(players)
-    if not players:
-        await tg_send(chat_id, "Список игроков пуст.")
-        return
-
-    # кнопки на подписку (по 2 в ряд)
-    kb_rows = []
-    row = []
-    for p in players[:24]:  # ограничим клавиатуру
-        lab = f"+ {p}"
-        row.append({"text": lab, "callback_data": f"w:{p}"})
-        if len(row) == 2:
-            kb_rows.append(row); row = []
-    if row: kb_rows.append(row)
-
-    # текст + предложение
-    txt = "\n".join(["• " + x for x in players])
-    txt += "\n\nНажмите, чтобы подписаться на игрока на сегодня."
-
-    await tg_send(chat_id, txt, reply_markup={"inline_keyboard": kb_rows})
-
-# ---------------- command handlers ----------------
-
+# ---------- commands ----------
 async def _handle_watch(chat_id: int, payload: str):
     names = [x.strip() for x in (payload or "").split(",") if x.strip()]
     if not names:
-        await tg_send(chat_id, "Формат: /watch ИмяИгрока (или несколько через запятую)")
+        await tg_send_message(chat_id, "Формат: /watch ИмяИгрока (или несколько через запятую)")
         return
     added, asked = [], []
     today = _today(chat_id)
     for nm in names:
         en_full = _canon_en(nm)
         pair = ru_name_for(en_full)
-        if pair is None or (pair and not pair[0] and not pair[1]):
+        if pair is None:
             suggestion = _auto_ru_guess(en_full)
             set_pending_alias(chat_id, en_full)
             asked.append(en_full)
-            await tg_send(
+            await tg_send_message(
                 chat_id,
                 f"Как записать *{en_full}* по-русски?\n\n"
                 f"Вариант: _{suggestion}_\n"
@@ -294,7 +257,7 @@ async def _handle_watch(chat_id: int, payload: str):
             suggestion = _auto_ru_guess(en_full)
             set_pending_alias(chat_id, en_full)
             asked.append(en_full)
-            await tg_send(
+            await tg_send_message(
                 chat_id,
                 f"Как записать *{en_full}* по-русски?\n\n"
                 f"Вариант: _{suggestion}_\n"
@@ -308,94 +271,42 @@ async def _handle_watch(chat_id: int, payload: str):
         parts.append("\nЖду русскую запись для:\n" + "\n".join(f"• {x}" for x in asked))
     if parts:
         parts.append("\n/list — показать список на сегодня")
-        await tg_send(chat_id, "\n".join(parts))
+        await tg_send_message(chat_id, "\n".join(parts))
 
-async def _handle_text_alias(chat_id: int, text: str) -> bool:
+async def _handle_text_message(chat_id: int, text: str) -> bool:
     if text.startswith("/"):
         return False
     pending = consume_pending_alias(chat_id)
     if not pending:
         return False
-    ru = (text or "").strip()
+    ru = text.strip()
     if not ru:
-        await tg_send(chat_id, "Пустой ответ. Пришлите, как записать имя по-русски.")
+        await tg_send_message(chat_id, "Пустой ответ. Пришлите, как записать имя по-русски.")
         return True
     set_alias(pending, ru)
     add_watch(chat_id, pending, _today(chat_id))
-    await tg_send(chat_id, f"Сохранил: *{ru}* (EN: {pending}).\n/list — показать список", parse_mode="Markdown")
+    await tg_send_message(
+        chat_id,
+        f"Сохранил: *{ru}* (EN: {pending}).\n/list — показать список",
+        parse_mode="Markdown"
+    )
     return True
 
-# ---------------- dialogs ----------------
+# ---------- routing ----------
+@app.get("/")
+async def health() -> JSONResponse:
+    return JSONResponse({"ok": True, "service": "webhook", "path": "/api/webhook"})
 
-async def _send_watches_list(chat_id: int):
-    day = _today(chat_id)
-    arr = list_today(chat_id, day)
-    if not arr:
-        await tg_send(chat_id, f"Сегодня ({day.isoformat()}):\n—\n\nДобавьте игроков: /watch Rublev, Musetti")
-        return
-    buttons = [[{"text": f"Удалить {it}", "callback_data": f"rm:{it}"}] for it in arr]
-    await tg_send(
-        chat_id,
-        f"Сегодня ({day.isoformat()}):\n{_format_list_with_ru(arr)}\n\nХотите исправить список?",
-        reply_markup={"inline_keyboard": buttons}
-    )
-
-async def _send_start(chat_id: int):
-    ds = _today(chat_id)
-    data = get_events_cache(ds)
-    # если кэша нет — объясняем
-    if not data:
-        await tg_send(
-            chat_id,
-            "Расписание сегодня пока недоступно.\nКэш пополнится GitHub-воркером.\n\n"
-            "Можно добавить игроков вручную: /watch Rublev, Musetti."
-        )
-        return
-    events = []
-    if isinstance(data, dict):
-        events = data.get("events") or data.get("list") or []
-    if not events:
-        await tg_send(chat_id, "На сегодня список пуст. Нажмите /start позже или используйте /watch имя.")
-        return
-    await _send_categories(chat_id, ds, events)
-
-# ---------------- ASGI entry ----------------
-
-async def app(scope, receive, send):
-    if scope.get("type") != "http":
-        return
-
-    method = scope.get("method")
-    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-
-    # GET — всегда ок (для браузера/health)
-    if method == "GET":
-        await _json(send, {"ok": True, "service": "webhook", "path": "/api/webhook"})
-        return
-
-    # Только POST от Telegram проверяем секрет
-    if method == "POST" and WEBHOOK_SECRET:
-        if headers.get("x-telegram-bot-api-secret-token") != WEBHOOK_SECRET:
-            await _json(send, {"error": "forbidden"}, 403)
-            return
-
-    if method != "POST":
-        await _json(send, {"error": "method not allowed"}, 405)
-        return
+@app.post("/")
+async def webhook_abs(req: Request) -> JSONResponse:
+    if WEBHOOK_SECRET:
+        if req.headers.get("x-telegram-bot-api-secret-token") != WEBHOOK_SECRET:
+            raise HTTPException(status_code=403, detail="forbidden")
 
     ensure_schema()
 
-    # читаем тело
-    body = b""
-    while True:
-        message = await receive()
-        if message["type"] == "http.request":
-            body += message.get("body", b"")
-            if not message.get("more_body"):
-                break
-
     try:
-        payload = json.loads(body.decode() or "{}")
+        payload = await req.json()
     except Exception:
         payload = {}
 
@@ -407,49 +318,42 @@ async def app(scope, receive, send):
         if data.startswith("rm:"):
             name = data[3:]
             removed = remove_watch(chat_id, _today(chat_id), name)
-            await tg_answer(cb.get("id"), "Удалено" if removed else "Не найдено")
+            await tg_answer_callback_query(cb.get("id"), "Удалено" if removed else "Не найдено")
             await _send_watches_list(chat_id)
-            await _json(send, {"ok": True, "action": "rm"}); return
-
+            return JSONResponse({"ok": True, "action": "rm"})
         if data.startswith("cat:"):
-            cat = data.split(":", 1)[1]
-            ds = _today(chat_id)
-            cache = get_events_cache(ds) or {}
-            events = cache.get("events") or cache.get("list") or []
-            await tg_answer(cb.get("id"))
-            await _send_tournaments(chat_id, cat, ds, events)
-            await _json(send, {"ok": True, "action": "cat"}); return
+            _, cat = data.split(":", 1)
+            await tg_answer_callback_query(cb.get("id"))
+            await _send_tournaments(chat_id, cat)
+            return JSONResponse({"ok": True, "action": "cat"})
+        if data.startswith("tour:"):
+            _, cat, tour = data.split(":", 2)
+            await tg_answer_callback_query(cb.get("id"))
+            await _send_players_for_tournament(chat_id, cat, tour)
+            return JSONResponse({"ok": True, "action": "tour"})
+        if data.startswith("watch:"):
+            _, nm = data.split(":", 1)
+            await tg_answer_callback_query(cb.get("id"))
+            await _handle_watch(chat_id, nm)
+            return JSONResponse({"ok": True, "action": "watch"})
+        if data.startswith("mkpost:"):
+            await tg_answer_callback_query(cb.get("id"))
+            await tg_send_message(chat_id, "Шаблон поста: *Матч завершён.* Счёт: 6-4 4-6 7-6(5).", parse_mode="Markdown")
+            return JSONResponse({"ok": True, "action": "mkpost"})
 
-        if data.startswith("t:"):
-            # t:<Category>:<TournamentId>
-            _, cat, tid = (data.split(":", 2) + ["", ""])[0:3]
-            ds = _today(chat_id)
-            cache = get_events_cache(ds) or {}
-            events = cache.get("events") or cache.get("list") or []
-            await tg_answer(cb.get("id"))
-            await _send_players_for_tournament(chat_id, cat, tid, ds, events)
-            await _json(send, {"ok": True, "action": "t"}); return
+        await tg_answer_callback_query(cb.get("id"))
+        return JSONResponse({"ok": True, "action": "noop"})
 
-        if data.startswith("w:"):
-            name = data[2:]
-            # Повторно используем механику /watch для автоалиаса
-            await tg_answer(cb.get("id"))
-            await _handle_watch(chat_id, name)
-            await _json(send, {"ok": True, "action": "w"}); return
-
-        await tg_answer(cb.get("id"))
-        await _json(send, {"ok": True, "action": "noop"}); return
-
-    # message
+    # обычное сообщение
     msg = payload.get("message") or payload.get("edited_message")
     if not msg:
-        await _json(send, {"ok": True, "ignored": True}); return
+        return JSONResponse({"ok": True, "ignored": True})
 
     chat_id = msg["chat"]["id"]
     text = msg.get("text") or ""
 
-    if await _handle_text_alias(chat_id, text):
-        await _json(send, {"ok": True}); return
+    if await _handle_text_message(chat_id, text):
+        return JSONResponse({"ok": True})
 
     if text.startswith("/"):
         parts = text.split(maxsplit=1)
@@ -458,37 +362,30 @@ async def app(scope, receive, send):
 
         if cmd in ("start", "menu"):
             await _send_start(chat_id)
-            await _json(send, {"ok": True}); return
+            return JSONResponse({"ok": True})
 
         if cmd == "list":
             await _send_watches_list(chat_id)
-            await _json(send, {"ok": True}); return
+            return JSONResponse({"ok": True})
 
         if cmd == "watch":
             await _handle_watch(chat_id, arg)
-            await _json(send, {"ok": True}); return
+            return JSONResponse({"ok": True})
 
         if cmd == "settz":
             tz = (arg or "").strip()
             if not tz:
-                await tg_send(chat_id, f"Текущая TZ: {get_tz(chat_id)}. Пример: /settz Europe/Moscow")
+                await tg_send_message(chat_id, f"Текущая TZ: {get_tz(chat_id)}. Пример: /settz Europe/Moscow")
             else:
                 try:
                     ZoneInfo(tz)
                     set_tz(chat_id, tz)
-                    await tg_send(chat_id, f"TZ обновлена: {tz}")
+                    await tg_send_message(chat_id, f"TZ обновлена: {tz}")
                 except Exception:
-                    await tg_send(chat_id, "Некорректная TZ. Пример: Europe/Moscow")
-            await _json(send, {"ok": True}); return
+                    await tg_send_message(chat_id, "Некорректная TZ. Пример: Europe/Moscow")
+            return JSONResponse({"ok": True})
 
-        await tg_send(chat_id, "Команда не распознана. Доступно: /start, /list, /watch, /settz")
-        await _json(send, {"ok": True}); return
+        await tg_send_message(chat_id, "Команда не распознана. Доступно: /start, /list, /watch, /settz")
+        return JSONResponse({"ok": True})
 
-    await _json(send, {"ok": True})
-
-# ---- tiny JSON responder ----
-async def _json(send, obj: Dict[str, Any], status: int = 200):
-    body = json.dumps(obj).encode("utf-8")
-    headers = [(b"content-type", b"application/json"), (b"cache-control", b"no-store")]
-    await send({"type": "http.response.start", "status": status, "headers": headers})
-    await send({"type": "http.response.body", "body": body})
+    return JSONResponse({"ok": True})
