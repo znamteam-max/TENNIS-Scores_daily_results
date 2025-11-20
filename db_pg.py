@@ -17,41 +17,98 @@ def _conn():
 
 
 def ensure_schema() -> None:
-    sql = """
-    create table if not exists chats (
-        chat_id bigint primary key,
-        tz text not null default 'Europe/Berlin'
-    );
-    create table if not exists name_aliases (
-        en_full text primary key,
-        ru text not null
-    );
-    create table if not exists pending_alias (
-        chat_id bigint primary key,
-        en_full text not null
-    );
-    create table if not exists watches (
-        chat_id bigint not null,
-        day date not null,
-        name_en text not null,
-        primary key (chat_id, day, name_en)
-    );
-    create table if not exists events_cache (
-        ds date primary key,
-        data jsonb not null,
-        updated_at timestamptz not null default now()
-    );
     """
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute(sql)
+    Создаёт таблицы при отсутствии и выполняет мягкие миграции схемы
+    (добавление недостающих колонок, переименование старых в актуальные).
+    Идempotent: безопасно выполнять на каждом старте.
+    """
+    with _conn() as con, con.cursor() as cur:
+        # Базовые таблицы (создадим минимум, без спорных NOT NULL, чтобы не упасть на старых схемах)
+        cur.execute("""
+        create table if not exists chats (
+            chat_id bigint primary key,
+            tz text not null default 'Europe/Berlin'
+        );
+        create table if not exists name_aliases (
+            en_full text primary key,
+            ru text not null
+        );
+        create table if not exists pending_alias (
+            chat_id bigint primary key,
+            en_full text not null
+        );
+        create table if not exists watches (
+            chat_id bigint not null,
+            day date not null,
+            name_en text not null,
+            primary key (chat_id, day, name_en)
+        );
+        -- создаём минимальную оболочку events_cache, без колонок: добавим ниже с IF NOT EXISTS
+        create table if not exists events_cache (
+            ds date primary key
+        );
+        """)
+
+        _migrate_events_cache(cur)
+
+
+def _migrate_events_cache(cur) -> None:
+    """
+    Приводит таблицу events_cache к виду:
+      ds date primary key,
+      data jsonb not null,
+      updated_at timestamptz not null default now()
+    - добавляет недостающие колонки,
+    - если ранее была колонка с другим именем (events/payload/json/value/content) — переименует в data,
+    - при необходимости приводит тип к jsonb.
+    """
+    cur.execute("""
+        select column_name, data_type
+        from information_schema.columns
+        where table_schema = current_schema()
+          and table_name = 'events_cache'
+    """)
+    cols = {name: dtype for (name, dtype) in cur.fetchall()}
+
+    # 1) Если вместо data раньше была колонка с другим названием — переименуем
+    if "data" not in cols:
+        for old in ("events", "payload", "json", "value", "content"):
+            if old in cols:
+                cur.execute(f"alter table events_cache rename column {old} to data;")
+                break
+
+    # 2) Добавим data, если всё ещё нет
+    cur.execute("alter table events_cache add column if not exists data jsonb;")
+
+    # 3) Приведём тип data к jsonb (на случай, если это text/json)
+    # Старательно и безопасно: если уже jsonb — оператор ничего не меняет.
+    try:
+        cur.execute("""
+            alter table events_cache
+            alter column data type jsonb
+            using (
+                case
+                    when pg_typeof(data) = 'jsonb'::regtype then data
+                    when pg_typeof(data) = 'json'::regtype  then data::jsonb
+                    else to_jsonb(data)
+                end
+            );
+        """)
+    except Exception:
+        # В крайнем случае оставляем как есть (вставка ниже всё равно пойдёт через ::jsonb)
+        pass
+
+    # 4) Добавим updated_at
+    cur.execute("""
+        alter table events_cache
+        add column if not exists updated_at timestamptz not null default now();
+    """)
 
 
 def ping_db() -> bool:
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("select 1")
-            return True
+    with _conn() as con, con.cursor() as cur:
+        cur.execute("select 1")
+        return True
 
 
 # ---------- TZ ----------
@@ -91,9 +148,8 @@ def set_alias(en_full: str, ru: str) -> None:
 
 def ru_name_for(en_full: str) -> Optional[Tuple[str, bool]]:
     """
-    Возвращает (ru, True) если RU-алиас есть,
-    ("", False) если запись об этом EN известна без RU (для совместимости может вернуть None — если нет совсем),
-    но мы здесь возвращаем None только когда записи нет совсем.
+    Возвращает (ru, True) если RU-алиас есть.
+    Возвращает None, если записи вообще нет — в этом случае боту нужно спросить русскую запись у пользователя.
     """
     en_full = (en_full or "").strip()
     if not en_full:
@@ -103,7 +159,7 @@ def ru_name_for(en_full: str) -> Optional[Tuple[str, bool]]:
         row = cur.fetchone()
         if row:
             return (row[0], True)
-        return None  # нет записи вообще
+        return None
 
 
 def set_pending_alias(chat_id: int, en_full: str) -> None:
@@ -153,6 +209,10 @@ def list_today(chat_id: int, day: dt.date) -> List[str]:
 
 # ---------- events cache ----------
 def set_events_cache(ds: dt.date, data: Dict[str, Any]) -> None:
+    """
+    Записывает кэш событий на дату. Используем ::jsonb, чтобы гарантировать тип даже если драйвер
+    передаёт строку. Перед вставкой миграция ensure_schema() гарантирует наличие колонки data.
+    """
     with _conn() as con, con.cursor() as cur:
         cur.execute("""
             insert into events_cache (ds, data, updated_at)
