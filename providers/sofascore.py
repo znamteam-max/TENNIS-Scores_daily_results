@@ -1,9 +1,7 @@
 from __future__ import annotations
-
-import datetime as dt
-import random
-import httpx
+import datetime as dt, random
 from typing import Dict, Any
+import httpx
 
 BASES = [
     "https://api.sofascore.com/api/v1",
@@ -23,30 +21,23 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
+def _ds(d: dt.date) -> str:
+    return d.isoformat()
 
 async def _get_json(client: httpx.AsyncClient, url: str) -> Dict[str, Any]:
     h = dict(HEADERS)
     h["User-Agent"] = random.choice(UAS)
-    r = await client.get(url, headers=h, timeout=20.0)
+    r = await client.get(url, headers=h, timeout=25.0)
     r.raise_for_status()
     try:
         return r.json()
     except Exception:
         return {}
 
-
-def _ds(d: dt.date) -> str:
-    return d.isoformat()
-
-
 async def events_by_date(client: httpx.AsyncClient, d: dt.date) -> Dict[str, Any]:
-    """
-    Возвращает {"events":[...]} или пустой словарь.
-    Делает ретраи по двум базам и несколько разных путей в случае 403.
-    """
     paths = [
         f"/sport/tennis/scheduled-events/{_ds(d)}",
-        f"/sport/tennis/events/{_ds(d)}",  # запасной
+        f"/sport/tennis/events/{_ds(d)}",
     ]
     last_exc = None
     for base in BASES:
@@ -58,7 +49,6 @@ async def events_by_date(client: httpx.AsyncClient, d: dt.date) -> Dict[str, Any
             except httpx.HTTPError as e:
                 last_exc = e
                 continue
-    # запасной источник — live
     try:
         data = await _get_json(client, f"{BASES[0]}/sport/tennis/events/live")
         if data:
