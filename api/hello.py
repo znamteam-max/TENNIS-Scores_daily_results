@@ -1,20 +1,21 @@
-# api/hello.py — чистый ASGI без FastAPI
+# api/hello.py — чистый ASGI
+
+from __future__ import annotations
 import json
 
-async def app(scope, receive, send):
-    if scope.get("type") != "http":
-        return
-    if scope.get("method") not in ("GET", "HEAD"):
-        status = 405
-        body = b'{"error":"method not allowed"}'
-    else:
-        body = json.dumps({"ok": True, "service": "hello", "path": "/api/hello/"}).encode("utf-8")
-        status = 200
+async def _json(send, status: int, payload: dict):
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    await send({
+        "type": "http.response.start",
+        "status": status,
+        "headers": [[b"content-type", b"application/json; charset=utf-8"]],
+    })
+    await send({"type": "http.response.body", "body": body})
 
-    headers = [
-        (b"content-type", b"application/json"),
-        (b"cache-control", b"no-store"),
-    ]
-    await send({"type": "http.response.start", "status": status, "headers": headers})
-    if scope.get("method") != "HEAD":
-        await send({"type": "http.response.body", "body": body})
+async def app(scope, receive, send):
+    if scope["type"] != "http":
+        await _json(send, 200, {"ok": True, "note": "not http"})
+        return
+    await _json(send, 200, {"ok": True, "service": "hello", "path": "/api/hello/"})
+
+handler = app
