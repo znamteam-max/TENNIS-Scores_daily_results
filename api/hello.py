@@ -1,5 +1,5 @@
-# api/hello.py — минимальный ASGI без единого импорта
-async def handler(scope, receive, send):
+# /api/hello.py — чистый ASGI, переменная "app"
+async def app(scope, receive, send):
     assert scope["type"] == "http"
     body = b'{"ok":true,"service":"hello","path":"/api/hello/"}'
     headers = [(b"content-type", b"application/json")]
