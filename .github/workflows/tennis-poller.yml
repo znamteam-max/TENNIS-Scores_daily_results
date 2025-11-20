@@ -1,18 +1,22 @@
-name: Tennis Poller
+name: TENNIS poller (cache Sofascore)
 
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "15,45 * * * *"   # пример: 2 раза в час
+    - cron: "*/30 * * * *"  # каждые 30 минут
+
+permissions:
+  contents: read
 
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -21,8 +25,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run worker
+      - name: Run poller
         env:
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-          APP_TZ: Europe/Helsinki
-        run: python gha_worker.py
+          APP_TZ: Europe/Berlin
+        run: |
+          python gha_worker.py

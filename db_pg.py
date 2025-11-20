@@ -1,240 +1,176 @@
 from __future__ import annotations
 
 import os
+import json
 import datetime as dt
-from typing import Optional, Iterable, Tuple, List
+from typing import Optional, List, Tuple, Dict, Any
 
 import psycopg
 
+POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 
-# ---------- connection ----------
 
-def _pg_url() -> str:
-    url = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
-    if not url:
+def _conn():
+    if not POSTGRES_URL:
         raise RuntimeError("POSTGRES_URL is not set")
-    return url
+    return psycopg.connect(POSTGRES_URL, autocommit=True)
 
-
-def _conn() -> psycopg.Connection:
-    # psycopg v3
-    return psycopg.connect(_pg_url())
-
-
-# ---------- schema ----------
 
 def ensure_schema() -> None:
+    sql = """
+    create table if not exists chats (
+        chat_id bigint primary key,
+        tz text not null default 'Europe/Berlin'
+    );
+    create table if not exists name_aliases (
+        en_full text primary key,
+        ru text not null
+    );
+    create table if not exists pending_alias (
+        chat_id bigint primary key,
+        en_full text not null
+    );
+    create table if not exists watches (
+        chat_id bigint not null,
+        day date not null,
+        name_en text not null,
+        primary key (chat_id, day, name_en)
+    );
+    create table if not exists events_cache (
+        ds date primary key,
+        data jsonb not null,
+        updated_at timestamptz not null default now()
+    );
+    """
+    with _conn() as con:
+        with con.cursor() as cur:
+            cur.execute(sql)
+
+
+def ping_db() -> bool:
+    with _conn() as con:
+        with con.cursor() as cur:
+            cur.execute("select 1")
+            return True
+
+
+# ---------- TZ ----------
+def get_tz(chat_id: int) -> Optional[str]:
     with _conn() as con, con.cursor() as cur:
-        # prefs (таймзона и др)
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS chat_prefs (
-            chat_id BIGINT PRIMARY KEY,
-            tz TEXT,
-            updated_at TIMESTAMPTZ DEFAULT now()
-        );
-        """)
-
-        # алиасы имен
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS player_names (
-            en_key TEXT PRIMARY KEY,
-            en_full TEXT NOT NULL,
-            ru_name TEXT,
-            updated_at TIMESTAMPTZ DEFAULT now()
-        );
-        """)
-
-        # список наблюдаемых игроков на дату
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS watches (
-            chat_id BIGINT NOT NULL,
-            day DATE NOT NULL,
-            name_en TEXT NOT NULL,
-            PRIMARY KEY (chat_id, day, name_en)
-        );
-        """)
-
-        # кэш расписаний
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS events_cache (
-            ds DATE PRIMARY KEY,
-            json JSONB NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT now()
-        );
-        """)
-
-        # ожидание русского алиаса (между вопросом и ответом)
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS pending_alias (
-            chat_id BIGINT PRIMARY KEY,
-            en_full TEXT NOT NULL,
-            asked_at TIMESTAMPTZ DEFAULT now()
-        );
-        """)
-
-        con.commit()
-
-
-# ---------- prefs (timezone) ----------
-
-def get_tz(chat_id: int) -> str:
-    default_tz = os.getenv("APP_TZ", "Europe/Helsinki")
-    with _conn() as con, con.cursor() as cur:
-        cur.execute("SELECT tz FROM chat_prefs WHERE chat_id=%s", (chat_id,))
+        cur.execute("select tz from chats where chat_id=%s", (chat_id,))
         row = cur.fetchone()
-        return row[0] if row and row[0] else default_tz
+        return row[0] if row else None
 
 
 def set_tz(chat_id: int, tz: str) -> None:
     with _conn() as con, con.cursor() as cur:
         cur.execute("""
-        INSERT INTO chat_prefs (chat_id, tz, updated_at)
-        VALUES (%s, %s, now())
-        ON CONFLICT (chat_id) DO UPDATE
-           SET tz = EXCLUDED.tz, updated_at = now();
+            insert into chats (chat_id, tz)
+            values (%s, %s)
+            on conflict (chat_id) do update set tz=excluded.tz
         """, (chat_id, tz))
-        con.commit()
 
 
-# ---------- name helpers / aliases ----------
-
+# ---------- aliases ----------
 def norm_key(s: str) -> str:
-    return "".join(ch.lower() for ch in s.strip() if ch.isalnum() or ch == " ")
+    return " ".join((s or "").strip().lower().split())
 
 
-def _is_cyrillic(s: str) -> bool:
-    return any(("А" <= ch <= "я") or (ch in ("ё", "Ё")) for ch in s)
-
-
-def set_alias(en_full: str, ru_name: str) -> None:
-    en_key = norm_key(en_full)
-    ru = ru_name.strip().replace("Ё", "Е").replace("ё", "е")
+def set_alias(en_full: str, ru: str) -> None:
+    en_full = (en_full or "").strip()
+    ru = (ru or "").strip()
+    if not en_full or not ru:
+        return
     with _conn() as con, con.cursor() as cur:
         cur.execute("""
-        INSERT INTO player_names (en_key, en_full, ru_name, updated_at)
-        VALUES (%s, %s, %s, now())
-        ON CONFLICT (en_key) DO UPDATE
-           SET en_full = EXCLUDED.en_full,
-               ru_name = EXCLUDED.ru_name,
-               updated_at = now();
-        """, (en_key, en_full.strip(), ru))
-        con.commit()
+            insert into name_aliases (en_full, ru)
+            values (%s, %s)
+            on conflict (en_full) do update set ru=excluded.ru
+        """, (en_full, ru))
 
 
-def get_player_ru(name_or_en: str) -> Optional[str]:
-    s = (name_or_en or "").strip()
-    if not s:
+def ru_name_for(en_full: str) -> Optional[Tuple[str, bool]]:
+    """
+    Возвращает (ru, True) если RU-алиас есть,
+    ("", False) если запись об этом EN известна без RU (для совместимости может вернуть None — если нет совсем),
+    но мы здесь возвращаем None только когда записи нет совсем.
+    """
+    en_full = (en_full or "").strip()
+    if not en_full:
         return None
-    if _is_cyrillic(s):
-        return s.replace("Ё", "Е").replace("ё", "е")
-    en_key = norm_key(s)
     with _conn() as con, con.cursor() as cur:
-        cur.execute("SELECT ru_name FROM player_names WHERE en_key=%s", (en_key,))
+        cur.execute("select ru from name_aliases where en_full=%s", (en_full,))
         row = cur.fetchone()
-        return row[0] if row and row[0] else None
+        if row:
+            return (row[0], True)
+        return None  # нет записи вообще
 
-
-def ru_name_for(name: str) -> Tuple[Optional[str], bool]:
-    """
-    Возвращает (ru_or_none, known_bool).
-    known=True, если:
-      - пользователь уже ввёл кириллицу, или
-      - для EN есть сохранённый RU-алиас.
-    """
-    if not name:
-        return None, False
-    s = name.strip()
-    if _is_cyrillic(s):
-        return s.replace("Ё", "Е").replace("ё", "е"), True
-    ru = get_player_ru(s)
-    return (ru, True) if ru else (None, False)
-
-
-# ---------- pending alias (dialog state) ----------
 
 def set_pending_alias(chat_id: int, en_full: str) -> None:
     with _conn() as con, con.cursor() as cur:
         cur.execute("""
-        INSERT INTO pending_alias (chat_id, en_full, asked_at)
-        VALUES (%s, %s, now())
-        ON CONFLICT (chat_id) DO UPDATE
-           SET en_full = EXCLUDED.en_full, asked_at = now();
-        """, (chat_id, en_full.strip()))
-        con.commit()
+            insert into pending_alias (chat_id, en_full)
+            values (%s, %s)
+            on conflict (chat_id) do update set en_full=excluded.en_full
+        """, (chat_id, (en_full or "").strip()))
 
 
 def consume_pending_alias(chat_id: int) -> Optional[str]:
     with _conn() as con, con.cursor() as cur:
-        cur.execute("SELECT en_full FROM pending_alias WHERE chat_id=%s", (chat_id,))
+        cur.execute("select en_full from pending_alias where chat_id=%s", (chat_id,))
         row = cur.fetchone()
-        cur.execute("DELETE FROM pending_alias WHERE chat_id=%s", (chat_id,))
-        con.commit()
-        return row[0] if row else None
+        if not row:
+            return None
+        en_full = row[0]
+        cur.execute("delete from pending_alias where chat_id=%s", (chat_id,))
+        return en_full
 
 
-# ---------- watches (followed players per day) ----------
-
-def add_watches(chat_id: int, day: dt.date, names: Iterable[str]) -> int:
-    """
-    Принимает список строк (EN/RU). В таблицу кладём, как пришло.
-    """
-    cnt = 0
+# ---------- watches ----------
+def add_watch(chat_id: int, name_en: str, day: dt.date) -> None:
     with _conn() as con, con.cursor() as cur:
-        for raw in names:
-            if isinstance(raw, dt.date):
-                # если перепутали порядок аргументов — игнорируем этот элемент
-                continue
-            name = (raw or "").strip()
-            if not name:
-                continue
-            cur.execute("""
-            INSERT INTO watches (chat_id, day, name_en)
-            VALUES (%s, %s, %s)
-            ON CONFLICT DO NOTHING;
-            """, (chat_id, day, name))
-            cnt += cur.rowcount
-        con.commit()
-    return cnt
+        cur.execute("""
+            insert into watches (chat_id, day, name_en)
+            values (%s, %s, %s)
+            on conflict do nothing
+        """, (chat_id, day, (name_en or "").strip()))
 
 
-def add_watch(chat_id: int, name_en: str, day: dt.date) -> int:
-    # ВАЖНО: правильный порядок аргументов
-    return add_watches(chat_id, day, [name_en])
-
-
-def remove_watch(chat_id: int, day: dt.date, name_en: str) -> int:
+def remove_watch(chat_id: int, day: dt.date, name_en: str) -> bool:
     with _conn() as con, con.cursor() as cur:
-        cur.execute("DELETE FROM watches WHERE chat_id=%s AND day=%s AND name_en=%s",
-                    (chat_id, day, name_en.strip()))
-        n = cur.rowcount
-        con.commit()
-        return n
+        cur.execute("delete from watches where chat_id=%s and day=%s and name_en=%s",
+                    (chat_id, day, (name_en or "").strip()))
+        return cur.rowcount > 0
 
 
 def list_today(chat_id: int, day: dt.date) -> List[str]:
     with _conn() as con, con.cursor() as cur:
-        cur.execute(
-            "SELECT name_en FROM watches WHERE chat_id=%s AND day=%s ORDER BY name_en",
-            (chat_id, day),
-        )
+        cur.execute("""
+            select name_en from watches where chat_id=%s and day=%s order by name_en
+        """, (chat_id, day))
         return [r[0] for r in cur.fetchall()]
 
 
 # ---------- events cache ----------
-
-def get_events_cache(ds: dt.date) -> Optional[dict]:
-    with _conn() as con, con.cursor() as cur:
-        cur.execute("SELECT json FROM events_cache WHERE ds=%s", (ds,))
-        row = cur.fetchone()
-        return row[0] if row else None
-
-
-def set_events_cache(ds: dt.date, data: dict) -> None:
+def set_events_cache(ds: dt.date, data: Dict[str, Any]) -> None:
     with _conn() as con, con.cursor() as cur:
         cur.execute("""
-        INSERT INTO events_cache (ds, json, created_at)
-        VALUES (%s, %s, now())
-        ON CONFLICT (ds) DO UPDATE
-           SET json = EXCLUDED.json, created_at = now();
-        """, (ds, data))
-        con.commit()
+            insert into events_cache (ds, data, updated_at)
+            values (%s, %s::jsonb, now())
+            on conflict (ds) do update set data=excluded.data, updated_at=now()
+        """, (ds, json.dumps(data or {})))
+
+
+def get_events_cache(ds: dt.date) -> Optional[Dict[str, Any]]:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute("select data from events_cache where ds=%s", (ds,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        val = row[0]
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except Exception:
+                return None
+        return val

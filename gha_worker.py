@@ -1,46 +1,35 @@
-import os
+from __future__ import annotations
+
 import asyncio
+import os
 import datetime as dt
-
+from zoneinfo import ZoneInfo
 import httpx
-import pytz
 
-from db_pg import ensure_schema, cache_schedule  # cache_schedule: date -> json в БД
+from db_pg import ensure_schema, set_events_cache
 from providers import sofascore as ss
 
-TZ = os.getenv("APP_TZ", "Europe/Helsinki")
+
+def _tz() -> ZoneInfo:
+    return ZoneInfo(os.getenv("APP_TZ", "Europe/Berlin"))
+
 
 def today_local() -> dt.date:
-    return dt.datetime.now(pytz.timezone(TZ)).date()
+    return dt.datetime.now(_tz()).date()
+
 
 async def run_once() -> None:
     ensure_schema()
-
-    today = today_local()
-    # HTTP/2 отключаем — challenge прилетает чаще; ставим нормальный UA
-    async with httpx.AsyncClient(http2=False, headers={
-        "User-Agent": os.getenv(
-            "SOFA_UA",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
-    }) as client:
+    d = today_local()
+    async with httpx.AsyncClient(http2=True, timeout=20.0) as c:
         try:
-            events = await ss.events_by_date(client, today)
-        except ss.SofascoreChallenge as e:
-            print(f"[WARN] Sofascore challenge, schedule skipped: {e}")
-            # Не валим job — просто выходим. Следующий запуск, как правило, отрабатывает.
-            return
+            data = await ss.events_by_date(c, d)
         except Exception as e:
-            print(f"[WARN] Unexpected error while fetching schedule: {e}")
-            return
+            print(f"[ERR] sofascore fetch failed: {e}")
+            data = {}
+    set_events_cache(d, data or {"events": []})
+    print(f"[OK] cache updated for {d}, events={len((data or {}).get('events', []))}")
 
-    try:
-        # сохраняем кэш в БД одним JSON-blob’ом на дату
-        cache_schedule(today, events)
-        print(f"[OK] Cached schedule for {today}: {len(events)} events")
-    except Exception as e:
-        print(f"[WARN] Could not cache schedule: {e}")
 
 if __name__ == "__main__":
     asyncio.run(run_once())

@@ -1,20 +1,21 @@
-__build__ = "2025-11-14-20-xx"
-from fastapi import FastAPI, HTTPException, Request
-import os
-from db_pg import ensure_schema
+from __future__ import annotations
 
-app = FastAPI()
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
-def _ok(path: str): return {"ok": True, "service": "dbcheck", "path": path, "db": "connected"}
+from db_pg import ensure_schema, ping_db
+
+app = FastAPI(title="dbcheck")
+handler = app
+
 
 @app.get("/")
-@app.get("/api/dbcheck")
-@app.get("/api/dbcheck/")
-def db_root(request: Request):
-    if not os.getenv("POSTGRES_URL"):
-        raise HTTPException(status_code=500, detail="POSTGRES_URL is not set")
+def dbcheck_root():
     try:
         ensure_schema()
-        return _ok(str(request.url.path))
+        ok = ping_db()
+        return JSONResponse(
+            {"ok": True, "service": "dbcheck", "path": "/api/dbcheck", "db": "connected" if ok else "fail"}
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB error: {e!s}")
+        return JSONResponse({"ok": False, "service": "dbcheck", "error": str(e)}, status_code=500)

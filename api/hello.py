@@ -1,26 +1,20 @@
-from fastapi import FastAPI, Request
+from __future__ import annotations
+
 import os
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
-app = FastAPI()
+app = FastAPI(title="hello")
+handler = app  # Vercel ищет app/handler
 
-def _summary(path: str):
-    return {"ok": True, "service": "hello", "path": path}
 
-# ловим и "/" и полный путь "/api/hello"
 @app.get("/")
-@app.get("/api/hello")
-@app.get("/api/hello/")
-async def hello_root(request: Request):
-    return _summary(str(request.url.path))
+def hello_root():
+    return JSONResponse({"ok": True, "service": "hello", "path": "/api/hello/"})
 
-# отладка окружения — тоже на оба пути
+
 @app.get("/debug-env")
-@app.get("/api/hello/debug-env")
-async def debug_env(request: Request):
-    return {
-        "path": str(request.url.path),
-        "has_pg": bool(os.getenv("POSTGRES_URL")),
-        "has_token": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
-        "has_secret": bool(os.getenv("WEBHOOK_SECRET")),
-        "tz": os.getenv("APP_TZ", "Europe/Helsinki"),
-    }
+def debug_env():
+    keys = ("POSTGRES_URL", "APP_TZ", "WEBHOOK_SECRET")
+    env = {k: os.getenv(k, "") for k in keys}
+    return JSONResponse({"ok": True, "env": env})
