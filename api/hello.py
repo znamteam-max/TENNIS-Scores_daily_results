@@ -1,17 +1,20 @@
-from __future__ import annotations
-import os
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+# api/hello.py — чистый ASGI без FastAPI
+import json
 
-app = FastAPI(title="hello")
-handler = app
+async def app(scope, receive, send):
+    if scope.get("type") != "http":
+        return
+    if scope.get("method") not in ("GET", "HEAD"):
+        status = 405
+        body = b'{"error":"method not allowed"}'
+    else:
+        body = json.dumps({"ok": True, "service": "hello", "path": "/api/hello/"}).encode("utf-8")
+        status = 200
 
-@app.get("/")
-def hello_root():
-    return JSONResponse({"ok": True, "service": "hello", "path": "/api/hello/"})
-
-@app.get("/debug-env")
-def debug_env():
-    keys = ("POSTGRES_URL", "APP_TZ", "WEBHOOK_SECRET")
-    env = {k: os.getenv(k, "") for k in keys}
-    return JSONResponse({"ok": True, "env": env})
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"cache-control", b"no-store"),
+    ]
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    if scope.get("method") != "HEAD":
+        await send({"type": "http.response.body", "body": body})

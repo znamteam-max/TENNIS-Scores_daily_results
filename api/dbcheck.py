@@ -1,16 +1,19 @@
-from __future__ import annotations
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+# api/dbcheck.py — чистый ASGI, безопасный ping
+import json
 from db_pg import ensure_schema, ping_db
 
-app = FastAPI(title="dbcheck")
-handler = app
-
-@app.get("/")
-def dbcheck_root():
+async def app(scope, receive, send):
+    if scope.get("type") != "http":
+        return
     try:
         ensure_schema()
-        ok = ping_db()
-        return JSONResponse({"ok": True, "service": "dbcheck", "db": "connected" if ok else "fail"})
+        db_ok = ping_db()
+        body = json.dumps({"ok": True, "service": "dbcheck", "db": "connected" if db_ok else "fail"}).encode("utf-8")
+        status = 200
     except Exception as e:
-        return JSONResponse({"ok": False, "service": "dbcheck", "error": str(e)}, status_code=500)
+        body = json.dumps({"ok": False, "service": "dbcheck", "error": str(e)}).encode("utf-8")
+        status = 500
+
+    headers = [(b"content-type", b"application/json"), (b"cache-control", b"no-store")]
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
