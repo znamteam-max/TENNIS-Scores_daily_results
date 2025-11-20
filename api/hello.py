@@ -1,4 +1,4 @@
-# api/hello.py — минимальный ASGI без FastAPI
+# api/hello.py — минимальный ASGI без единого импорта
 async def handler(scope, receive, send):
     assert scope["type"] == "http"
     body = b'{"ok":true,"service":"hello","path":"/api/hello/"}'
