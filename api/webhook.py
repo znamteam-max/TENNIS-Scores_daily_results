@@ -1,4 +1,4 @@
-# api/webhook.py — zero-dep ASGI webhook (GET=health, POST=ack), без внешних зависимостей
+# api/webhook.py — zero deps, GET=health, POST=ack; never 500
 
 def _get_env(name: str, default: str = "") -> str:
     try:
@@ -39,7 +39,7 @@ async def _json(send, status: int, payload: dict):
     })
     await send({"type": "http.response.body", "body": body})
 
-async def app(scope, receive, send):
+async def handler(scope, receive, send):
     try:
         if scope.get("type") != "http":
             await _json(send, 200, {"ok": True, "note": "not http"})
@@ -54,7 +54,7 @@ async def app(scope, receive, send):
             await _json(send, 405, {"ok": False, "error": "method not allowed"})
             return
 
-        # Проверка секрета (если задан)
+        # Optional secret (temporarily unset it in Vercel for manual tests)
         secret = _get_env("WEBHOOK_SECRET", "")
         if secret:
             tok = _get_header(scope, "x-telegram-bot-api-secret-token")
@@ -62,10 +62,9 @@ async def app(scope, receive, send):
                 await _json(send, 403, {"error": "forbidden"})
                 return
 
-        # Прочтём тело (и не упадём, что бы там ни было)
+        # Read body safely (ignore parse errors)
         try:
             raw = await _read_body(receive)
-            # Попробуем распарсить — чисто для контроля, без жёстких ошибок:
             try:
                 import json as _jsonlib
                 _ = _jsonlib.loads((raw or b"{}").decode("utf-8", "ignore") or "{}")
@@ -74,11 +73,6 @@ async def app(scope, receive, send):
         except Exception:
             pass
 
-        # Всегда ОК
         await _json(send, 200, {"ok": True})
-
     except Exception as e:
-        # Даже при исключении никогда не 500 — вернём 200 с описанием
         await _json(send, 200, {"ok": True, "service": "webhook", "note": f"caught:{type(e).__name__}"})
-
-handler = app
