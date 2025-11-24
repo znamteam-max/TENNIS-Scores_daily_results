@@ -1,4 +1,4 @@
-# api/diag.py — zero-dep ASGI diag (никогда не 500)
+# api/diag.py — zero deps, safe 200 even on exceptions
 
 async def _json(send, status, payload: dict):
     try:
@@ -13,7 +13,7 @@ async def _json(send, status, payload: dict):
     })
     await send({"type": "http.response.body", "body": body})
 
-async def app(scope, receive, send):
+async def handler(scope, receive, send):
     try:
         if scope.get("type") != "http":
             await _json(send, 200, {"ok": True, "note": "not http"})
@@ -21,5 +21,3 @@ async def app(scope, receive, send):
         await _json(send, 200, {"ok": True, "service": "diag"})
     except Exception as e:
         await _json(send, 200, {"ok": True, "service": "diag", "note": f"caught:{type(e).__name__}"})
-
-handler = app
