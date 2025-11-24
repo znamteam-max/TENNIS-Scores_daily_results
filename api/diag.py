@@ -1,139 +1,136 @@
-import os, json, datetime as dt, urllib.parse
+# api/diag.py — безопасная диагностика без внешних зависимостей (WSGI)
 
-from db_pg import ensure_schema, set_events_cache, get_events_cache, ping_db
+from __future__ import annotations
+import os, sys, json, traceback, urllib.parse, urllib.request, datetime as dt
 
-def _json(start_response, obj, code=200):
-    body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-    start_response(f"{code} OK", [
+def _json(obj: dict, status: str = "200 OK"):
+    body = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    headers = [
         ("Content-Type", "application/json; charset=utf-8"),
-        ("Content-Length", str(len(body))),
-    ])
-    return [body]
+        ("Cache-Control", "no-store, max-age=0"),
+        ("Access-Control-Allow-Origin", "*"),
+    ]
+    return status, headers, body.encode("utf-8")
 
-def _today():
-    tz = os.getenv("APP_TZ", "Europe/Helsinki")
+def _has_mod(name: str) -> bool:
     try:
-        from zoneinfo import ZoneInfo
-        return dt.datetime.now(ZoneInfo(tz)).date()
+        __import__(name)
+        return True
     except Exception:
-        return dt.date.today()
+        return False
 
-def _sample_events(ds: dt.date):
-    # МИНИМАЛЬНЫЙ МОК, похожий на Sofascore: {"events":[ ... ]}
-    # Распределим по «категориям» через tournament.category.name,
-    # чтобы дальше ты мог группировать: ATP / Challenger / Другие
-    base_ts = int(dt.datetime(ds.year, ds.month, ds.day, 11, 0).timestamp())
-    return {
-        "events": [
-            {
-                "id": 101,
-                "startTimestamp": base_ts + 3600,   # +1 час
-                "homeTeam": {"name": "Jannik Sinner"},
-                "awayTeam": {"name": "Alex de Minaur"},
-                "tournament": {
-                    "name": "ATP 500 Vienna",
-                    "uniqueTournament": {"name": "ATP 500 Vienna"},
-                    "category": {"id": 1, "name": "ATP"}
-                }
-            },
-            {
-                "id": 102,
-                "startTimestamp": base_ts + 7200,   # +2 часа
-                "homeTeam": {"name": "Stan Wawrinka"},
-                "awayTeam": {"name": "Lorenzo Musetti"},
-                "tournament": {
-                    "name": "Challenger Helsinki",
-                    "uniqueTournament": {"name": "Challenger Helsinki"},
-                    "category": {"id": 2, "name": "Challenger"}
-                }
-            },
-            {
-                "id": 103,
-                "startTimestamp": base_ts + 10800,  # +3 часа
-                "homeTeam": {"name": "Karen Khachanov"},
-                "awayTeam": {"name": "Reilly Opelka"},
-                "tournament": {
-                    "name": "ITF Prague M25",
-                    "uniqueTournament": {"name": "ITF Prague M25"},
-                    "category": {"id": 3, "name": "ITF"}
-                }
-            },
-            {
-                "id": 104,
-                "startTimestamp": base_ts + 14400,  # +4 часа
-                "homeTeam": {"name": "Carlos Alcaraz"},
-                "awayTeam": {"name": "Frances Tiafoe"},
-                "tournament": {
-                    "name": "Challenger Champaign",
-                    "uniqueTournament": {"name": "Challenger Champaign"},
-                    "category": {"id": 2, "name": "Challenger"}
-                }
-            },
-        ]
-    }
+def _masked_env(env: dict) -> dict:
+    # Маскируем чувствительные значения
+    mask_keys = {"POSTGRES_URL", "DATABASE_URL", "TELEGRAM_BOT_TOKEN", "WEBHOOK_SECRET"}
+    out = {}
+    for k, v in env.items():
+        if k in mask_keys and v:
+            out[k] = f"<len:{len(v)}>"
+        else:
+            out[k] = v
+    return out
 
-def handler(environ, start_response):
-    if environ["REQUEST_METHOD"] != "GET":
-        return _json(start_response, {"ok": False, "err": "GET only"}, code=405)
+def _self_check(host: str) -> dict:
+    url = f"https://{host}/api/webhook"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            code = r.getcode()
+            b = r.read(512).decode("utf-8", "replace")
+            return {"url": url, "code": code, "body_sample": b}
+    except Exception as e:
+        return {"url": url, "error": str(e), "trace": traceback.format_exc().splitlines()[-1]}
 
-    qs = urllib.parse.parse_qs(environ.get("QUERY_STRING") or "")
-    path = environ.get("PATH_INFO") or "/api/diag"
+def _tg_check(token: str) -> dict:
+    if not token:
+        return {"error": "TELEGRAM_BOT_TOKEN is empty"}
+    url = f"https://api.telegram.org/bot{token}/getWebhookInfo"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            code = r.getcode()
+            body = r.read().decode("utf-8", "replace")
+            return {"code": code, "body": body}
+    except Exception as e:
+        return {"error": str(e), "trace": traceback.format_exc().splitlines()[-1]}
 
-    # /api/diag?seed=1[&day=YYYY-MM-DD]
-    if "seed" in qs:
-        ensure_schema()
-        try:
-            day_s = (qs.get("day") or [""])[0]
-            ds = dt.date.fromisoformat(day_s) if day_s else _today()
-        except Exception:
-            ds = _today()
-        data = _sample_events(ds)
-        set_events_cache(ds, data)
-        return _json(start_response, {
+def _db_check(pg_url: str) -> dict:
+    if not pg_url:
+        return {"error": "POSTGRES_URL is empty"}
+    if not _has_mod("psycopg"):
+        return {"error": "psycopg not installed (add to requirements.txt)"}
+    try:
+        import psycopg
+        with psycopg.connect(pg_url, autocommit=True) as con:
+            with con.cursor() as cur:
+                cur.execute("select 1")
+                row = cur.fetchone()
+        return {"ok": True, "select1": row[0] if row else None}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "trace": traceback.format_exc().splitlines()[-1]}
+
+def app(environ, start_response):
+    try:
+        qs = environ.get("QUERY_STRING", "")
+        params = dict(urllib.parse.parse_qsl(qs))
+
+        host = environ.get("HTTP_HOST", "")
+        path = environ.get("PATH_INFO", "")
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        pg_url = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
+
+        # Базовый ответ
+        data = {
             "ok": True,
             "service": "diag",
-            "action": "seed",
-            "day": ds.isoformat(),
-            "events": len(data.get("events", [])),
-        })
+            "runtime": "wsgi",
+            "python": sys.version,
+            "path": path,
+            "has": {
+                "fastapi": _has_mod("fastapi"),
+                "httpx": _has_mod("httpx"),
+                "psycopg": _has_mod("psycopg"),
+            },
+            "tips": [
+                "env=1 — показать ENV (замаскировано)",
+                "self=1 — запросить GET /api/webhook",
+                "tg=1   — Telegram getWebhookInfo (нужен TELEGRAM_BOT_TOKEN)",
+                "db=1   — ping БД (нужен psycopg и POSTGRES_URL)",
+                "full=1 — выполнить все проверки сразу",
+            ],
+        }
 
-    # /api/diag?show=1 — посмотреть что лежит в кэше на сегодня
-    if "show" in qs:
-        try:
-            day_s = (qs.get("day") or [""])[0]
-            ds = dt.date.fromisoformat(day_s) if day_s else _today()
-        except Exception:
-            ds = _today()
-        payload = get_events_cache(ds) or {}
-        return _json(start_response, {
-            "ok": True,
+        do_env  = params.get("env")  is not None or params.get("full") is not None
+        do_self = params.get("self") is not None or params.get("full") is not None
+        do_tg   = params.get("tg")   is not None or params.get("full") is not None
+        do_db   = params.get("db")   is not None or params.get("full") is not None
+
+        if do_env:
+            data["env"] = _masked_env({
+                "WEBHOOK_SECRET": os.getenv("WEBHOOK_SECRET", ""),
+                "TELEGRAM_BOT_TOKEN": token or "",
+                "POSTGRES_URL": pg_url or "",
+                "APP_TZ": os.getenv("APP_TZ", ""),
+                "HTTP_HOST": host,
+            })
+
+        if do_self:
+            data["self_check"] = _self_check(host)
+
+        if do_tg:
+            data["telegram"] = _tg_check(token)
+
+        if do_db:
+            data["db"] = _db_check(pg_url)
+
+        status, headers, body = _json(data)
+        start_response(status, headers)
+        return [body]
+
+    except Exception as e:
+        status, headers, body = _json({
+            "ok": False,
             "service": "diag",
-            "action": "show",
-            "day": ds.isoformat(),
-            "payload": payload
-        })
-
-    # /api/diag?db=1 — проверка подключения к БД
-    if "db" in qs:
-        try:
-            ensure_schema()
-            ok = ping_db()
-            return _json(start_response, {"ok": ok, "service": "diag", "action": "db"})
-        except Exception as e:
-            return _json(start_response, {"ok": False, "error": str(e)}, code=500)
-
-    # по умолчанию — краткая сводка
-    info = {
-        "ok": True,
-        "service": "diag",
-        "runtime": "wsgi",
-        "python": os.sys.version,
-        "path": path,
-        "tips": [
-            "seed=1  — залить МOК-расписание на сегодня",
-            "seed=1&day=YYYY-MM-DD — залить МOК на дату",
-            "show=1  — показать, что лежит в кэше",
-            "db=1    — проверить БД",
-        ],
-    }
-    return _json(start_response, info)
+            "error": str(e),
+            "trace": traceback.format_exc(),
+        }, status="500 Internal Server Error")
+        start_response(status, headers)
+        return [body]
