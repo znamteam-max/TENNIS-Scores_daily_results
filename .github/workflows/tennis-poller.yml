@@ -3,7 +3,7 @@ name: TENNIS poller (cache Sofascore)
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/10 * * * *"
 
 permissions:
   contents: read
@@ -28,6 +28,7 @@ jobs:
       - name: Run poller
         env:
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           APP_TZ: Europe/London
         run: |
           python gha_worker.py
