@@ -212,7 +212,9 @@ def _my_matches_menu(chat_id: int) -> Dict[str, Any]:
 
 def _handle_text(chat_id: int, text: str) -> None:
     raw = (text or "").strip()
-    cmd = raw.lower()
+    cmd = raw.split(" ", 1)[0].lower()
+    if "@" in cmd:
+        cmd = cmd.split("@", 1)[0]
 
     if cmd in {"/start", "start"}:
         tg_send_message(
