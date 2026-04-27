@@ -1,7 +1,9 @@
 # api/diag.py — безопасная диагностика без внешних зависимостей (WSGI)
 
 from __future__ import annotations
+import asyncio
 import os, sys, json, traceback, urllib.parse, urllib.request, datetime as dt
+from zoneinfo import ZoneInfo
 
 def _json(obj: dict, status: str = "200 OK"):
     body = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
@@ -67,6 +69,70 @@ def _db_check(pg_url: str) -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e), "trace": traceback.format_exc().splitlines()[-1]}
 
+def _today() -> dt.date:
+    try:
+        return dt.datetime.now(ZoneInfo(os.getenv("APP_TZ") or "Europe/Helsinki")).date()
+    except Exception:
+        return dt.date.today()
+
+def _summarize_events(data: dict) -> dict:
+    data = data or {}
+    events_raw = data.get("events", []) or []
+    out = {"raw_events": len(events_raw)}
+    try:
+        from providers import sofascore as ss
+        events = ss.normalize_events(data)
+        by_group = {}
+        by_category = {}
+        for e in events:
+            by_group[e.get("tour_group") or "unknown"] = by_group.get(e.get("tour_group") or "unknown", 0) + 1
+            by_category[e.get("category") or "unknown"] = by_category.get(e.get("category") or "unknown", 0) + 1
+        out["normalized_events"] = len(events)
+        out["by_group"] = by_group
+        out["by_category"] = by_category
+        out["men_tournaments"] = len(ss.tournaments_for_tour_group(events, "men"))
+        out["women_tournaments"] = len(ss.tournaments_for_tour_group(events, "women"))
+    except Exception as e:
+        out["summary_error"] = str(e)
+    return out
+
+def _cache_check(pg_url: str) -> dict:
+    if not pg_url:
+        return {"error": "POSTGRES_URL is empty"}
+    if not _has_mod("psycopg"):
+        return {"error": "psycopg not installed"}
+    try:
+        import psycopg
+        rows = []
+        with psycopg.connect(pg_url, autocommit=True) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    select ds, data, updated_at
+                    from events_cache
+                    order by ds desc
+                    limit 5
+                    """
+                )
+                for ds, data, updated_at in cur.fetchall():
+                    rows.append({
+                        "ds": ds.isoformat() if hasattr(ds, "isoformat") else str(ds),
+                        "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+                        "summary": _summarize_events(data or {}),
+                    })
+        return {"ok": True, "today": _today().isoformat(), "rows": rows}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "trace": traceback.format_exc().splitlines()[-1]}
+
+def _source_check() -> dict:
+    try:
+        from providers import sofascore as ss
+        day = _today()
+        data = asyncio.run(ss.events_by_date(day)) or {"events": []}
+        return {"ok": True, "day": day.isoformat(), "summary": _summarize_events(data)}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "trace": traceback.format_exc().splitlines()[-1]}
+
 def app(environ, start_response):
     try:
         qs = environ.get("QUERY_STRING", "")
@@ -94,6 +160,8 @@ def app(environ, start_response):
                 "self=1 — запросить GET /api/webhook",
                 "tg=1   — Telegram getWebhookInfo (нужен TELEGRAM_BOT_TOKEN)",
                 "db=1   — ping БД (нужен psycopg и POSTGRES_URL)",
+                "cache=1 — проверить events_cache",
+                "source=1 — проверить загрузку Sofascore",
                 "full=1 — выполнить все проверки сразу",
             ],
         }
@@ -102,6 +170,8 @@ def app(environ, start_response):
         do_self = params.get("self") is not None or params.get("full") is not None
         do_tg   = params.get("tg")   is not None or params.get("full") is not None
         do_db   = params.get("db")   is not None or params.get("full") is not None
+        do_cache = params.get("cache") is not None
+        do_source = params.get("source") is not None
 
         if do_env:
             data["env"] = _masked_env({
@@ -120,6 +190,12 @@ def app(environ, start_response):
 
         if do_db:
             data["db"] = _db_check(pg_url)
+
+        if do_cache:
+            data["cache"] = _cache_check(pg_url)
+
+        if do_source:
+            data["source"] = _source_check()
 
         status, headers, body = _json(data)
         start_response(status, headers)
