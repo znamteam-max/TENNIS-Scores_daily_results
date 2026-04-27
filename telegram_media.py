@@ -52,11 +52,11 @@ def _post_multipart(
         chunks.append(str(value).encode("utf-8"))
         chunks.append(b"\r\n")
 
+    chunks.append(f"--{boundary}\r\n".encode("ascii"))
     file_header = (
         f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
         f"Content-Type: {content_type}\r\n\r\n"
     ).encode("ascii")
-    chunks.append(f"--{boundary}\r\n".encode("ascii"))
     chunks.append(file_header)
     chunks.append(file_bytes)
     chunks.append(b"\r\n")
@@ -78,9 +78,9 @@ def _post_multipart(
             body_text = exc.read().decode("utf-8", "replace")
         except Exception:
             body_text = "<body read failed>"
-        print(f"[tg] photo failed: status={exc.code} body={body_text}")
+        print(f"[tg] media failed: status={exc.code} body={body_text}")
     except urllib.error.URLError as exc:
-        print(f"[tg] photo failed: {exc}")
+        print(f"[tg] media failed: {exc}")
     return False
 
 
@@ -92,15 +92,15 @@ def send_match_result(bot_token: str, chat_id: int, event: Dict[str, Any]) -> bo
     try:
         png = build_match_card_png(event)
         caption: Optional[str] = text if len(text) <= 1000 else None
-        photo_ok = _post_multipart(
-            _api_url(bot_token, "sendPhoto"),
+        document_ok = _post_multipart(
+            _api_url(bot_token, "sendDocument"),
             {"chat_id": chat_id, "caption": caption},
-            "photo",
+            "document",
             "match-result.png",
             "image/png",
             png,
         )
-        if photo_ok:
+        if document_ok:
             if caption is None:
                 return _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
             return True
