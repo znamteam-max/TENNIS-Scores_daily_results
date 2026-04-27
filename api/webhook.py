@@ -17,6 +17,7 @@ from db_pg import (
     get_state,
     get_tz,
     list_match_watches,
+    mark_match_notified,
     remove_match_watch,
     set_state,
     set_tz,
@@ -120,47 +121,46 @@ def _load_events_for_chat(chat_id: int) -> List[Dict[str, Any]]:
     return ss.normalize_events(data)
 
 
-def _categories_menu(chat_id: int) -> Dict[str, Any]:
+def _tour_groups_menu(chat_id: int) -> Dict[str, Any]:
     rows = [
-        [_btn("ATP", "cat|ATP")],
-        [_btn("WTA", "cat|WTA")],
-        [_btn("ITF", "cat|ITF")],
+        [_btn("Мужской тур", "group|men")],
+        [_btn("Женский тур", "group|women")],
         [_btn("Мои матчи", "menu|mine")],
     ]
     return _kb(rows)
 
 
-def _tournaments_menu(chat_id: int, category: str) -> Dict[str, Any]:
+def _tournaments_menu(chat_id: int, group: str) -> Dict[str, Any]:
     events = _load_events_for_chat(chat_id)
-    tours = ss.tournaments_for_category(events, category)
+    tours = ss.tournaments_for_tour_group(events, group)
     rows: List[List[Dict[str, str]]] = []
 
     for i, t in enumerate(tours[:80], start=1):
         label = f"{t['tournament_name']} ({t['matches_count']})"
-        rows.append([_btn(label, f"tour|{category}|{i}")])
+        rows.append([_btn(label, f"tour|{group}|{i}")])
 
-    rows.append([_btn("← Назад", "menu|root")])
+    rows.append([_btn("Назад", "menu|root")])
     return _kb(rows)
 
 
-def _tournaments_map(chat_id: int, category: str) -> List[Dict[str, Any]]:
+def _tournaments_map(chat_id: int, group: str) -> List[Dict[str, Any]]:
     events = _load_events_for_chat(chat_id)
-    return ss.tournaments_for_category(events, category)
+    return ss.tournaments_for_tour_group(events, group)
 
 
-def _matches_menu(chat_id: int, category: str, tournament_name: str) -> Dict[str, Any]:
+def _matches_menu(chat_id: int, group: str, tournament_name: str) -> Dict[str, Any]:
     events = _load_events_for_chat(chat_id)
-    matches = ss.matches_for_tournament(events, category, tournament_name)
+    matches = ss.matches_for_tournament_in_tour(events, group, tournament_name)
 
     rows: List[List[Dict[str, str]]] = []
     for m in matches[:100]:
         tm = _fmt_ts(chat_id, m.get("start_ts"))
-        prefix = f"{tm} · " if tm else ""
-        label = f"{prefix}{m['home_name']} — {m['away_name']}"
+        prefix = f"{tm} - " if tm else ""
+        label = f"{prefix}{m['home_name']} - {m['away_name']}"
         rows.append([_btn(label, f"watch_add|{m['event_id']}")])
 
-    rows.append([_btn("← К турнирам", f"back_tours|{category}")])
-    rows.append([_btn("⌂ В начало", "menu|root")])
+    rows.append([_btn("К турнирам", f"back_tours|{group}")])
+    rows.append([_btn("В начало", "menu|root")])
     return _kb(rows)
 
 
@@ -180,9 +180,9 @@ def _my_matches_text(chat_id: int) -> str:
     lines = ["Твои матчи на сегодня:", ""]
     for r in rows:
         tm = _fmt_ts(chat_id, r.get("start_ts"))
-        prefix = f"{tm} · " if tm else ""
-        lines.append(f"• [{r['category']}] {r['tournament_name']}")
-        lines.append(f"  {prefix}{r['home_name']} — {r['away_name']}")
+        prefix = f"{tm} - " if tm else ""
+        lines.append(f"- [{r['category']}] {r['tournament_name']}")
+        lines.append(f"  {prefix}{r['home_name']} - {r['away_name']}")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -193,10 +193,10 @@ def _my_matches_menu(chat_id: int) -> Dict[str, Any]:
 
     for r in rows_db[:100]:
         tm = _fmt_ts(chat_id, r.get("start_ts"))
-        prefix = f"{tm} · " if tm else ""
-        rows.append([_btn(f"❌ {prefix}{r['home_name']} — {r['away_name']}", f"watch_del|{r['event_id']}")])
+        prefix = f"{tm} - " if tm else ""
+        rows.append([_btn(f"Удалить: {prefix}{r['home_name']} - {r['away_name']}", f"watch_del|{r['event_id']}")])
 
-    rows.append([_btn("⌂ В начало", "menu|root")])
+    rows.append([_btn("В начало", "menu|root")])
     return _kb(rows)
 
 
@@ -206,16 +206,16 @@ def _handle_text(chat_id: int, text: str) -> None:
     if raw == "/start":
         tg_send_message(
             chat_id,
-            "Привет! Выбери категорию тура на сегодня:",
-            reply_markup=_categories_menu(chat_id),
+            "Привет! Выбери тур на сегодня:",
+            reply_markup=_tour_groups_menu(chat_id),
         )
         return
 
     if raw == "/today":
         tg_send_message(
             chat_id,
-            "Выбери категорию тура на сегодня:",
-            reply_markup=_categories_menu(chat_id),
+            "Выбери тур на сегодня:",
+            reply_markup=_tour_groups_menu(chat_id),
         )
         return
 
@@ -234,15 +234,15 @@ def _handle_text(chat_id: int, text: str) -> None:
             set_tz(chat_id, tz)
             tg_send_message(chat_id, f"Ок, timezone сохранен: {tz}")
         except Exception:
-            tg_send_message(chat_id, "Не смог распознать timezone. Пример: Europe/Tallinn")
+            tg_send_message(chat_id, "Не смог распознать timezone. Пример: Europe/Helsinki")
         return
 
     tg_send_message(
         chat_id,
         "Команды:\n"
-        "/today — выбрать матчи на сегодня\n"
-        "/my — мои выбранные матчи\n"
-        "/tz Europe/Tallinn — сменить часовой пояс",
+        "/today - выбрать матчи на сегодня\n"
+        "/my - мои выбранные матчи\n"
+        "/tz Europe/Helsinki - сменить часовой пояс",
     )
 
 
@@ -253,8 +253,8 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
             tg_edit_message(
                 chat_id,
                 message_id,
-                "Выбери категорию тура на сегодня:",
-                reply_markup=_categories_menu(chat_id),
+                "Выбери тур на сегодня:",
+                reply_markup=_tour_groups_menu(chat_id),
             )
             tg_answer_callback_query(cq_id)
             return
@@ -269,50 +269,50 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
             tg_answer_callback_query(cq_id)
             return
 
-        if data.startswith("cat|"):
-            _, category = data.split("|", 1)
-            tours = _tournaments_map(chat_id, category)
+        if data.startswith("group|"):
+            _, group = data.split("|", 1)
+            tours = _tournaments_map(chat_id, group)
             if not tours:
                 tg_answer_callback_query(cq_id, "На сегодня турниров не найдено", show_alert=True)
                 return
 
-            set_state(chat_id, "picked_category", {"category": category})
+            set_state(chat_id, "picked_tour_group", {"group": group})
             tg_edit_message(
                 chat_id,
                 message_id,
-                f"Категория: {category}\nВыбери турнир:",
-                reply_markup=_tournaments_menu(chat_id, category),
+                f"{ss.tour_label(group)}\nВыбери турнир:",
+                reply_markup=_tournaments_menu(chat_id, group),
             )
             tg_answer_callback_query(cq_id)
             return
 
         if data.startswith("back_tours|"):
-            _, category = data.split("|", 1)
+            _, group = data.split("|", 1)
             tg_edit_message(
                 chat_id,
                 message_id,
-                f"Категория: {category}\nВыбери турнир:",
-                reply_markup=_tournaments_menu(chat_id, category),
+                f"{ss.tour_label(group)}\nВыбери турнир:",
+                reply_markup=_tournaments_menu(chat_id, group),
             )
             tg_answer_callback_query(cq_id)
             return
 
         if data.startswith("tour|"):
-            _, category, idx_s = data.split("|", 2)
+            _, group, idx_s = data.split("|", 2)
             idx = int(idx_s) - 1
-            tours = _tournaments_map(chat_id, category)
+            tours = _tournaments_map(chat_id, group)
             if idx < 0 or idx >= len(tours):
                 tg_answer_callback_query(cq_id, "Турнир не найден", show_alert=True)
                 return
 
             tournament_name = tours[idx]["tournament_name"]
-            set_state(chat_id, "picked_tournament", {"category": category, "tournament_name": tournament_name})
+            set_state(chat_id, "picked_tournament", {"group": group, "tournament_name": tournament_name})
 
             tg_edit_message(
                 chat_id,
                 message_id,
-                f"{category} → {tournament_name}\nВыбери матч:",
-                reply_markup=_matches_menu(chat_id, category, tournament_name),
+                f"{ss.tour_label(group)} - {tournament_name}\nВыбери матч:",
+                reply_markup=_matches_menu(chat_id, group, tournament_name),
             )
             tg_answer_callback_query(cq_id)
             return
@@ -326,8 +326,12 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
                 return
 
             added = add_match_watch(chat_id, _today(chat_id), row)
-            if added:
-                tg_answer_callback_query(cq_id, "Матч добавлен")
+            if added and ss.is_finished(row):
+                tg_send_message(chat_id, ss.result_message(row))
+                mark_match_notified(chat_id, _today(chat_id), event_id)
+                tg_answer_callback_query(cq_id, "Матч уже завершен, результат отправлен")
+            elif added:
+                tg_answer_callback_query(cq_id, "Матч добавлен. Результат придет после окончания.")
             else:
                 tg_answer_callback_query(cq_id, "Этот матч уже добавлен")
             return
