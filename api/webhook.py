@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import os
@@ -19,6 +20,7 @@ from db_pg import (
     list_match_watches,
     mark_match_notified,
     remove_match_watch,
+    set_events_cache,
     set_state,
     set_tz,
 )
@@ -127,8 +129,22 @@ def _chunk_buttons(items: List[Dict[str, str]], width: int = 1) -> List[List[Dic
 
 
 def _load_events_for_chat(chat_id: int) -> List[Dict[str, Any]]:
-    data = get_events_cache(_today(chat_id)) or {"events": []}
-    return ss.normalize_events(data)
+    day = _today(chat_id)
+    data = get_events_cache(day) or {"events": []}
+    events = ss.normalize_events(data)
+    if events:
+        return events
+
+    try:
+        print(f"[events] cache empty for {day}; fetching sofascore")
+        data = asyncio.run(ss.events_by_date(day)) or {"events": []}
+        set_events_cache(day, data)
+        events = ss.normalize_events(data)
+        print(f"[events] fetched for {day}: raw={len(data.get('events', []) or [])} normalized={len(events)}")
+    except Exception as e:
+        print(f"[events] fallback fetch failed for {day}: {e}")
+
+    return events
 
 
 def _tour_groups_menu(chat_id: int) -> Dict[str, Any]:
