@@ -39,6 +39,16 @@ def _post_json(url: str, payload: Dict[str, Any]) -> None:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             resp.read()
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:
+            body = "<failed to read response body>"
+        safe_payload = dict(payload)
+        if "reply_markup" in safe_payload:
+            safe_payload["reply_markup"] = "<present>"
+        print(f"[tg] request failed: status={e.code} body={body} payload={safe_payload}")
     except urllib.error.URLError as e:
         print(f"[tg] request failed: {e}")
 
@@ -202,8 +212,9 @@ def _my_matches_menu(chat_id: int) -> Dict[str, Any]:
 
 def _handle_text(chat_id: int, text: str) -> None:
     raw = (text or "").strip()
+    cmd = raw.lower()
 
-    if raw == "/start":
+    if cmd in {"/start", "start"}:
         tg_send_message(
             chat_id,
             "Привет! Выбери тур на сегодня:",
@@ -211,7 +222,7 @@ def _handle_text(chat_id: int, text: str) -> None:
         )
         return
 
-    if raw == "/today":
+    if cmd in {"/today", "today"}:
         tg_send_message(
             chat_id,
             "Выбери тур на сегодня:",
@@ -219,7 +230,7 @@ def _handle_text(chat_id: int, text: str) -> None:
         )
         return
 
-    if raw == "/my":
+    if cmd in {"/my", "my"}:
         tg_send_message(
             chat_id,
             _my_matches_text(chat_id),
@@ -383,6 +394,7 @@ class handler(BaseHTTPRequestHandler):
                 chat = msg.get("chat") or {}
                 chat_id = int(chat["id"])
                 text = msg.get("text") or ""
+                print(f"[webhook] message chat_id={chat_id} text={text!r}")
                 _handle_text(chat_id, text)
 
             elif "callback_query" in upd:
@@ -393,7 +405,10 @@ class handler(BaseHTTPRequestHandler):
                 chat = msg.get("chat") or {}
                 chat_id = int(chat["id"])
                 message_id = int(msg["message_id"])
+                print(f"[webhook] callback chat_id={chat_id} data={data!r}")
                 _handle_callback(chat_id, message_id, cq_id, data)
+            else:
+                print(f"[webhook] unsupported update keys={list(upd.keys())}")
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
