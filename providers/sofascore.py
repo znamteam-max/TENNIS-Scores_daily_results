@@ -3,20 +3,18 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
+import os
 import random
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 
-TOUR_LABELS = {
-    "men": "Мужской тур",
-    "women": "Женский тур",
-}
+TOUR_LABELS = {"men": "Мужской тур", "women": "Женский тур"}
 
-BASES = [
-    "https://api.sofascore.com/api/v1",
-    "https://www.sofascore.com/api/v1",
-]
+FLASHSCORE_BASE = "https://www.flashscore.com"
+FLASHSCORE_HOME = "https://www.flashscore.com/tennis/"
+FLASHSCORE_FSIGN = "SW9D1eZo"
 
 UAS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
@@ -24,250 +22,209 @@ UAS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
 ]
 
-HEADERS_BASE = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.sofascore.com/",
-    "Origin": "https://www.sofascore.com",
-    "Connection": "keep-alive",
-}
+
+def _app_today() -> dt.date:
+    try:
+        return dt.datetime.now(ZoneInfo(os.getenv("APP_TZ") or "Europe/Helsinki")).date()
+    except Exception:
+        return dt.date.today()
 
 
-def _ds(d: dt.date) -> str:
-    return d.isoformat()
-
-
-async def _fetch_json(url: str) -> Optional[Dict[str, Any]]:
-    headers = dict(HEADERS_BASE)
-    headers["User-Agent"] = random.choice(UAS)
-
-    async with httpx.AsyncClient(http2=False, timeout=20.0, follow_redirects=True) as c:
-        r = await c.get(url, headers=headers)
+async def _fetch_text(url: str, extra: Optional[Dict[str, str]] = None) -> Optional[str]:
+    headers = {
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+        "Referer": FLASHSCORE_HOME,
+        "User-Agent": random.choice(UAS),
+        "x-fsign": FLASHSCORE_FSIGN,
+    }
+    if extra:
+        headers.update(extra)
+    async with httpx.AsyncClient(http2=False, timeout=20.0, follow_redirects=True) as client:
+        r = await client.get(url, headers=headers)
         if r.status_code == 403:
             return None
         r.raise_for_status()
-        try:
-            data = r.json()
-            return data if isinstance(data, dict) else None
-        except Exception:
-            return None
+        return r.text
 
 
-async def events_by_date(d: dt.date) -> Dict[str, Any]:
-    """
-    Возвращает {"events":[...]} или {}.
-    """
-    paths = [
-        f"/sport/tennis/scheduled-events/{_ds(d)}",
-        f"/sport/tennis/events/{_ds(d)}",
-    ]
-
-    for base in BASES:
-        for path in paths:
-            data = await _fetch_json(f"{base}{path}")
-            if data and isinstance(data, dict) and isinstance(data.get("events"), list) and data.get("events"):
-                return data
-            await asyncio.sleep(0.4)
-
-    espn = await espn_events_by_date(d)
-    if espn.get("events"):
-        return espn
-
-    live = await _fetch_json(f"{BASES[0]}/sport/tennis/events/live")
-    if live and isinstance(live.get("events"), list):
-        return live
-
-    return {"events": []}
+def _fields(record: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for part in (record or "").split("¬"):
+        if "÷" in part:
+            key, value = part.split("÷", 1)
+            out[key] = value
+    return out
 
 
-def _espn_ds(d: dt.date) -> str:
-    return d.strftime("%Y%m%d")
-
-
-def _parse_espn_dt(value: Any) -> Optional[dt.datetime]:
-    if not value:
-        return None
-    try:
-        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def _espn_event_id(raw_id: Any) -> int:
-    text = str(raw_id or "").strip()
-    if text.isdigit():
-        return 900_000_000 + int(text)
-    digest = hashlib.md5(text.encode("utf-8")).hexdigest()
-    return 900_000_000 + (int(digest[:8], 16) % 90_000_000)
-
-
-def _espn_group_category(grouping: Dict[str, Any], league: str) -> str:
-    grouping_obj = grouping.get("grouping") or {}
-    group_text = _lower(
-        grouping_obj.get("slug"),
-        grouping_obj.get("displayName"),
-        grouping_obj.get("name"),
-    )
-    if "women" in group_text or league == "wta":
-        return "WTA"
-    if "men" in group_text or league == "atp":
-        return "ATP"
-    return league.upper()
-
-
-def _espn_competitor_name(comp: Dict[str, Any]) -> str:
-    for key in ("athlete", "roster", "team"):
-        obj = comp.get(key) or {}
-        if isinstance(obj, dict):
-            name = obj.get("displayName") or obj.get("fullName") or obj.get("name") or obj.get("shortDisplayName")
-            if name:
-                return str(name).replace("  ", " ").strip()
-    for key in ("displayName", "name", "shortDisplayName"):
-        name = comp.get(key)
-        if name:
-            return str(name).replace("  ", " ").strip()
-    return "TBD"
-
-
-def _espn_competitors(comp: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    competitors = comp.get("competitors") or []
-    if not isinstance(competitors, list):
-        competitors = []
-
-    home = next((c for c in competitors if (c or {}).get("homeAway") == "home"), None)
-    away = next((c for c in competitors if (c or {}).get("homeAway") == "away"), None)
-    ordered = sorted(
-        [c for c in competitors if isinstance(c, dict)],
-        key=lambda c: c.get("order") if isinstance(c.get("order"), int) else 99,
-    )
-
-    if not home and ordered:
-        home = ordered[0]
-    if not away and len(ordered) > 1:
-        away = ordered[1]
-
-    return home or {}, away or {}
-
-
-def _espn_score(comp: Dict[str, Any]) -> Dict[str, Any]:
-    score: Dict[str, Any] = {}
-    sets_won = 0
-    lines = comp.get("linescores") or []
-    if not isinstance(lines, list):
-        lines = []
-
-    for idx, line in enumerate(lines[:5], start=1):
-        if not isinstance(line, dict):
-            continue
-        if line.get("winner") is True:
-            sets_won += 1
-        if line.get("value") is not None:
-            score[f"period{idx}"] = line.get("value")
-        tb = line.get("tiebreak") or line.get("tieBreak") or line.get("tiebreakValue")
-        if tb is not None:
-            score[f"period{idx}TieBreak"] = tb
-
-    raw_score = comp.get("score")
-    try:
-        score["current"] = int(float(raw_score))
-    except Exception:
-        if lines:
-            score["current"] = sets_won
-    return score
-
-
-def _espn_status(comp: Dict[str, Any]) -> str:
-    status_type = ((comp.get("status") or {}).get("type") or {})
-    state = str(status_type.get("state") or "").lower()
-    name = str(status_type.get("name") or "").lower()
-    completed = bool(status_type.get("completed"))
-
-    if completed or state == "post" or "final" in name:
-        return "finished"
-    if state == "in" or "progress" in name:
-        return "inprogress"
-    return "notstarted"
-
-
-def _espn_winner_code(home: Dict[str, Any], away: Dict[str, Any]) -> Optional[int]:
-    if home.get("winner") is True:
-        return 1
-    if away.get("winner") is True:
-        return 2
-    return None
-
-
-def _espn_match_event(
-    tournament: Dict[str, Any],
-    grouping: Dict[str, Any],
-    comp: Dict[str, Any],
-    league: str,
-) -> Optional[Dict[str, Any]]:
-    start = _parse_espn_dt(comp.get("date") or comp.get("startDate"))
-    if not start:
-        return None
-
-    category = _espn_group_category(grouping, league)
-    grouping_obj = grouping.get("grouping") or {}
-    group_name = grouping_obj.get("displayName") or grouping_obj.get("name") or grouping_obj.get("slug") or ""
-    home, away = _espn_competitors(comp)
-    winner_code = _espn_winner_code(home, away)
-
-    event = {
-        "id": _espn_event_id(comp.get("id") or comp.get("uid")),
-        "customId": comp.get("uid"),
-        "tournament": {
-            "name": tournament.get("name") or tournament.get("shortName") or "Tournament",
-            "uniqueTournament": {
-                "name": tournament.get("name") or tournament.get("shortName") or "Tournament",
-                "category": {"name": category, "slug": category.lower()},
-            },
-            "category": {"name": category, "slug": category.lower()},
-        },
-        "season": {"name": f"{tournament.get('season', {}).get('year') or ''} {group_name}".strip()},
-        "homeCompetitor": {"name": _espn_competitor_name(home)},
-        "awayCompetitor": {"name": _espn_competitor_name(away)},
-        "startTimestamp": int(start.timestamp()),
-        "status": {"type": _espn_status(comp)},
-        "homeScore": _espn_score(home),
-        "awayScore": _espn_score(away),
-        "source": "espn",
-    }
-    if winner_code:
-        event["winnerCode"] = winner_code
-    return event
-
-
-async def espn_events_by_date(d: dt.date) -> Dict[str, Any]:
-    events: List[Dict[str, Any]] = []
-    seen: set[int] = set()
-
-    for league in ("atp", "wta"):
-        url = f"https://site.api.espn.com/apis/site/v2/sports/tennis/{league}/scoreboard?dates={_espn_ds(d)}"
-        data = await _fetch_json(url)
-        if not data:
-            continue
-
-        for tournament in data.get("events", []) or []:
-            for grouping in tournament.get("groupings", []) or []:
-                for comp in grouping.get("competitions", []) or []:
-                    start = _parse_espn_dt(comp.get("date") or comp.get("startDate"))
-                    if not start or start.date() != d:
-                        continue
-                    event = _espn_match_event(tournament, grouping, comp, league)
-                    if not event:
-                        continue
-                    event_id = int(event["id"])
-                    if event_id in seen:
-                        continue
-                    seen.add(event_id)
-                    events.append(event)
-
-    return {"events": events}
+def _clean(value: Any) -> str:
+    return " ".join(str(value or "").split())
 
 
 def _lower(*parts: Any) -> str:
     return " ".join(str(p or "").strip().lower() for p in parts if p is not None).strip()
+
+
+def _stable_id(source: str, raw_id: Any) -> int:
+    digest = hashlib.md5(f"{source}:{raw_id or ''}".encode("utf-8")).hexdigest()
+    return 700_000_000 + (int(digest[:9], 16) % 200_000_000)
+
+
+def _league_category(league: str) -> str:
+    upper = (league or "").upper()
+    if "ITF" in upper:
+        return "ITF"
+    if "CHALLENGER" in upper:
+        return "Challenger"
+    if "WTA" in upper:
+        return "WTA"
+    if "ATP" in upper:
+        return "ATP"
+    return "Other"
+
+
+def _league_group(league: str) -> str:
+    upper = (league or "").upper()
+    if "WTA" in upper or "WOMEN" in upper or any(x in upper for x in ("W15", "W25", "W35", "W50", "W75", "W100")):
+        return "women"
+    if "ATP" in upper or "MEN" in upper or "CHALLENGER" in upper or any(x in upper for x in ("M15", "M25", "M35", "M50")):
+        return "men"
+    return "other"
+
+
+def _tournament_from_league(league: str) -> str:
+    raw = _clean(league)
+    if ":" not in raw:
+        return raw or "Tournament"
+    rest = raw.split(":", 1)[1].strip()
+    parts = [p.strip() for p in rest.split(",") if p.strip()]
+    if len(parts) > 1 and parts[-1].lower() in {"clay", "hard", "grass", "indoor hard"}:
+        rest = ", ".join(parts[:-1])
+    return rest or raw
+
+
+def _num(value: Optional[str]) -> Optional[Any]:
+    if value in (None, ""):
+        return None
+    try:
+        n = float(str(value))
+        return int(n) if n.is_integer() else n
+    except Exception:
+        return value
+
+
+def _score(fields: Dict[str, str], side: str) -> Dict[str, Any]:
+    total_key = "AG" if side == "home" else "AH"
+    period_keys = ["BA", "BC", "BE", "BG", "BI"] if side == "home" else ["BB", "BD", "BF", "BH", "BJ"]
+    tiebreak_keys = ["DA", "DC", "DE", "DG", "DI"] if side == "home" else ["DB", "DD", "DF", "DH", "DJ"]
+    out: Dict[str, Any] = {}
+    total = _num(fields.get(total_key))
+    if total is not None:
+        out["current"] = total
+        out["display"] = total
+    for idx, key in enumerate(period_keys, start=1):
+        value = _num(fields.get(key))
+        if value is not None:
+            out[f"period{idx}"] = value
+    for idx, key in enumerate(tiebreak_keys, start=1):
+        value = _num(fields.get(key))
+        if value is not None:
+            out[f"period{idx}TieBreak"] = value
+    return out
+
+
+def _status(fields: Dict[str, str]) -> str:
+    phase = fields.get("AB") or ""
+    detail = fields.get("AC") or ""
+    note = _lower(fields.get("AM"))
+    if phase == "1":
+        return "notstarted"
+    if phase == "2":
+        return "inprogress"
+    if detail == "5" or "withdrawn" in note or "cancelled" in note:
+        return "cancelled"
+    if detail == "8" or "retired" in note:
+        return "retired"
+    if phase == "3":
+        return "finished"
+    return "unknown"
+
+
+def _winner_code(fields: Dict[str, str]) -> Optional[int]:
+    home = _num(fields.get("AG"))
+    away = _num(fields.get("AH"))
+    if isinstance(home, (int, float)) and isinstance(away, (int, float)):
+        if home > away:
+            return 1
+        if away > home:
+            return 2
+    return None
+
+
+def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    match_id = fields.get("AA")
+    if not match_id:
+        return None
+    league_name = league.get("ZA") or league.get("ZAF") or ""
+    category = _league_category(league_name)
+    tournament = _tournament_from_league(league_name)
+    event: Dict[str, Any] = {
+        "id": _stable_id("flashscore", match_id),
+        "customId": match_id,
+        "tournament": {
+            "name": tournament,
+            "uniqueTournament": {"name": tournament, "category": {"name": category, "slug": category.lower()}},
+            "category": {"name": category, "slug": category.lower()},
+        },
+        "season": {"name": league.get("ZAF") or league_name},
+        "homeCompetitor": {"name": _clean(fields.get("AE") or "TBD")},
+        "awayCompetitor": {"name": _clean(fields.get("AF") or "TBD")},
+        "startTimestamp": int(fields["AD"]) if str(fields.get("AD") or "").isdigit() else None,
+        "status": {"type": _status(fields), "detail": fields.get("AM") or ""},
+        "homeScore": _score(fields, "home"),
+        "awayScore": _score(fields, "away"),
+        "source": "flashscore",
+        "flashscore_id": match_id,
+        "flashscore_league": league_name,
+        "tour_group_hint": _league_group(league_name),
+    }
+    winner = _winner_code(fields)
+    if winner:
+        event["winnerCode"] = winner
+    return event
+
+
+async def flashscore_events_by_date(day: dt.date) -> Dict[str, Any]:
+    offset = (day - _app_today()).days
+    text = await _fetch_text(f"{FLASHSCORE_BASE}/x/feed/f_2_{offset}_2_en_1")
+    if not text or text == "0":
+        return {"source": "flashscore", "events": []}
+    league: Dict[str, str] = {}
+    events: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for record in text.split("¬~"):
+        fields = _fields(record)
+        if not fields:
+            continue
+        if "ZA" in fields:
+            league = fields
+            continue
+        if "AA" not in fields:
+            continue
+        event = _flashscore_event(fields, league)
+        if not event:
+            continue
+        event_id = int(event["id"])
+        if event_id in seen:
+            continue
+        seen.add(event_id)
+        events.append(event)
+    return {"source": "flashscore", "events": events}
+
+
+async def events_by_date(day: dt.date) -> Dict[str, Any]:
+    return await flashscore_events_by_date(day)
 
 
 def _category_name(ev: Dict[str, Any]) -> str:
@@ -284,58 +241,32 @@ def _tournament_name(ev: Dict[str, Any]) -> str:
 
 
 def _season_name(ev: Dict[str, Any]) -> str:
-    season = ev.get("season") or {}
-    return (season.get("name") or "").strip()
+    return ((ev.get("season") or {}).get("name") or "").strip()
 
 
 def classify(ev: Dict[str, Any]) -> str:
-    """
-    Нормальная классификация для меню:
-    ATP / WTA / ITF / Challenger / Other
-    """
-    cname = _category_name(ev)
-    tname = _lower(_tournament_name(ev), _season_name(ev))
-
-    hay = f"{cname} {tname}"
-
-    if "itf" in hay or "m15" in hay or "m25" in hay or "m50" in hay or "w15" in hay or "w25" in hay or "w50" in hay or "w75" in hay or "w100" in hay:
+    hay = f"{_category_name(ev)} {_tournament_name(ev)} {_season_name(ev)}".lower()
+    if any(x in hay for x in ("itf", "m15", "m25", "m35", "m50", "w15", "w25", "w35", "w50", "w75", "w100")):
         return "ITF"
-
     if "challenger" in hay:
         return "Challenger"
-
-    if "wta" in hay or "women" in hay or "female" in hay or "billie jean king cup" in hay:
+    if "wta" in hay or "women" in hay or "female" in hay:
         return "WTA"
-
-    if "atp" in hay or "men" in hay or "male" in hay or "davis cup" in hay or "united cup" in hay:
+    if "atp" in hay or "men" in hay or "male" in hay:
         return "ATP"
-
-    # эвристика по названию турнира
-    if any(x in hay for x in ["roland garros", "wimbledon", "us open", "australian open"]):
-        # без пола точно не угадаем, но для меню пусть идет в Other, чтобы не прятать
-        return "Other"
-
     return "Other"
 
 
 def tour_group(ev: Dict[str, Any]) -> str:
+    raw_hint = ev.get("tour_group_hint")
+    if raw_hint in {"men", "women"}:
+        return raw_hint
     category = classify(ev)
-    cname = _category_name(ev)
-    tname = _lower(_tournament_name(ev), _season_name(ev))
-    hay = f"{cname} {tname}"
-
-    if category == "WTA" or "wta" in hay or "women" in hay or "female" in hay:
+    hay = f"{_category_name(ev)} {_tournament_name(ev)} {_season_name(ev)}".lower()
+    if category == "WTA" or any(x in hay for x in ("wta", "women", "female", "w15", "w25", "w35", "w50", "w75", "w100")):
         return "women"
-
-    if any(x in hay for x in ["w15", "w25", "w35", "w50", "w75", "w100"]):
-        return "women"
-
-    if category in {"ATP", "Challenger"} or "atp" in hay or "challenger" in hay or "men" in hay or "male" in hay:
+    if category in {"ATP", "Challenger"} or any(x in hay for x in ("atp", "challenger", "men", "male", "m15", "m25", "m35", "m50")):
         return "men"
-
-    if any(x in hay for x in ["m15", "m25", "m35", "m50"]):
-        return "men"
-
     return "other"
 
 
@@ -345,214 +276,268 @@ def tour_label(group: str) -> str:
 
 def _side_name(ev: Dict[str, Any], side: str) -> str:
     keys = ["homePlayer", "homeCompetitor", "homeTeam", "home"] if side == "home" else ["awayPlayer", "awayCompetitor", "awayTeam", "away"]
-    for k in keys:
-        obj = ev.get(k)
+    for key in keys:
+        obj = ev.get(key)
         if isinstance(obj, dict):
             name = obj.get("name") or obj.get("shortName")
             if name:
                 return str(name)
-
-    comps = ev.get("competitors")
-    if isinstance(comps, list) and len(comps) == 2:
-        idx = 0 if side == "home" else 1
-        obj = comps[idx] or {}
-        name = obj.get("name") or obj.get("shortName")
-        if name:
-            return str(name)
-
     return "TBD"
 
 
-def _start_ts(ev: Dict[str, Any]) -> Optional[int]:
-    for k in ("startTimestamp", "startTimeTimestamp"):
-        v = ev.get(k)
-        if isinstance(v, int):
-            return v
-    return None
-
-
 def normalize_event(ev: Dict[str, Any]) -> Dict[str, Any]:
-    tournament_name = _tournament_name(ev)
-    category_name = classify(ev)
     group = tour_group(ev)
-
     return {
         "event_id": int(ev.get("id")),
         "custom_id": ev.get("customId"),
-        "tournament_name": tournament_name,
+        "tournament_name": _tournament_name(ev),
         "season_name": _season_name(ev),
-        "category": category_name,
+        "category": classify(ev),
         "tour_group": group,
         "tour_label": tour_label(group),
         "home_name": _side_name(ev, "home"),
         "away_name": _side_name(ev, "away"),
-        "start_ts": _start_ts(ev),
+        "start_ts": ev.get("startTimestamp") if isinstance(ev.get("startTimestamp"), int) else None,
         "status_type": ((ev.get("status") or {}).get("type") or "").lower(),
         "raw": ev,
     }
 
 
 def normalize_events(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
     for ev in data.get("events", []) or []:
         try:
-            if not ev.get("id"):
-                continue
-            out.append(normalize_event(ev))
+            if ev.get("id"):
+                rows.append(normalize_event(ev))
         except Exception:
             continue
-    return out
-
-
-def filter_by_category(events: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
-    category = (category or "").strip()
-    if not category:
-        return events
-    return [e for e in events if e.get("category") == category]
+    return rows
 
 
 def filter_by_tour_group(events: List[Dict[str, Any]], group: str) -> List[Dict[str, Any]]:
-    group = (group or "").strip().lower()
-    if not group:
-        return events
     return [e for e in events if e.get("tour_group") == group]
 
 
-def tournaments_for_category(events: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
-    rows = filter_by_category(events, category)
-    bucket: Dict[str, Dict[str, Any]] = {}
+def filter_by_category(events: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
+    return [e for e in events if e.get("category") == category]
 
-    for e in rows:
-        key = e["tournament_name"]
-        if key not in bucket:
-            bucket[key] = {
-                "tournament_name": e["tournament_name"],
-                "category": e["category"],
-                "matches_count": 0,
-            }
-        bucket[key]["matches_count"] += 1
 
-    return sorted(bucket.values(), key=lambda x: (x["tournament_name"].lower(), x["matches_count"]))
+def status_type(event: Dict[str, Any]) -> str:
+    raw = event.get("raw") or {}
+    return (event.get("status_type") or ((raw.get("status") or {}).get("type") or "")).lower()
 
 
 def tournaments_for_tour_group(events: List[Dict[str, Any]], group: str) -> List[Dict[str, Any]]:
-    rows = filter_by_tour_group(events, group)
     bucket: Dict[str, Dict[str, Any]] = {}
-
-    for e in rows:
-        key = e["tournament_name"]
-        if key not in bucket:
-            bucket[key] = {
-                "tournament_name": e["tournament_name"],
-                "tour_group": e["tour_group"],
-                "tour_label": e["tour_label"],
-                "matches_count": 0,
-            }
-        bucket[key]["matches_count"] += 1
-
+    for event in filter_by_tour_group(events, group):
+        key = event["tournament_name"]
+        row = bucket.setdefault(key, {"tournament_name": key, "tour_group": event["tour_group"], "tour_label": event["tour_label"], "matches_count": 0, "live_count": 0, "finished_count": 0})
+        row["matches_count"] += 1
+        status = status_type(event)
+        if status == "inprogress":
+            row["live_count"] += 1
+        if status in {"finished", "retired", "cancelled", "walkover"}:
+            row["finished_count"] += 1
     return sorted(bucket.values(), key=lambda x: (x["tournament_name"].lower(), x["matches_count"]))
 
 
-def matches_for_tournament(events: List[Dict[str, Any]], category: str, tournament_name: str) -> List[Dict[str, Any]]:
-    rows = filter_by_category(events, category)
-    rows = [e for e in rows if e["tournament_name"] == tournament_name]
-    rows.sort(key=lambda x: (x["start_ts"] or 0, x["home_name"], x["away_name"]))
+def tournaments_for_category(events: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
+    bucket: Dict[str, Dict[str, Any]] = {}
+    for event in filter_by_category(events, category):
+        key = event["tournament_name"]
+        row = bucket.setdefault(key, {"tournament_name": key, "category": category, "matches_count": 0})
+        row["matches_count"] += 1
+    return sorted(bucket.values(), key=lambda x: (x["tournament_name"].lower(), x["matches_count"]))
+
+
+def matches_for_tournament_in_tour(events: List[Dict[str, Any]], group: str, tournament: str) -> List[Dict[str, Any]]:
+    rows = [e for e in filter_by_tour_group(events, group) if e.get("tournament_name") == tournament]
+    rows.sort(key=lambda x: (x.get("start_ts") or 0, x.get("home_name") or "", x.get("away_name") or ""))
     return rows
 
 
-def matches_for_tournament_in_tour(events: List[Dict[str, Any]], group: str, tournament_name: str) -> List[Dict[str, Any]]:
-    rows = filter_by_tour_group(events, group)
-    rows = [e for e in rows if e["tournament_name"] == tournament_name]
-    rows.sort(key=lambda x: (x["start_ts"] or 0, x["home_name"], x["away_name"]))
+def matches_for_tournament(events: List[Dict[str, Any]], category: str, tournament: str) -> List[Dict[str, Any]]:
+    rows = [e for e in filter_by_category(events, category) if e.get("tournament_name") == tournament]
+    rows.sort(key=lambda x: (x.get("start_ts") or 0, x.get("home_name") or "", x.get("away_name") or ""))
     return rows
+
+
+def status_label(event: Dict[str, Any]) -> str:
+    return {
+        "finished": "Завершен",
+        "retired": "Завершен (снятие)",
+        "cancelled": "Отменен",
+        "walkover": "Тех. победа",
+        "inprogress": "Идет",
+        "notstarted": "Не начался",
+    }.get(status_type(event), "Статус неизвестен")
 
 
 def is_finished(event: Dict[str, Any]) -> bool:
-    raw = event.get("raw") or {}
-    status = (event.get("status_type") or ((raw.get("status") or {}).get("type") or "")).lower()
-    return status == "finished"
+    return status_type(event) in {"finished", "retired", "cancelled", "walkover"}
 
 
 def _score_obj(event: Dict[str, Any], side: str) -> Dict[str, Any]:
     raw = event.get("raw") or {}
-    key = "homeScore" if side == "home" else "awayScore"
-    obj = raw.get(key) or {}
+    obj = raw.get("homeScore" if side == "home" else "awayScore") or {}
     return obj if isinstance(obj, dict) else {}
 
 
 def _score_value(score: Dict[str, Any], *keys: str) -> Optional[Any]:
     for key in keys:
-        value = score.get(key)
-        if value is not None:
-            return value
+        if score.get(key) is not None:
+            return score.get(key)
     return None
 
 
-def _fmt_score_value(value: Any) -> str:
+def _fmt(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
 
 
 def final_score(event: Dict[str, Any]) -> str:
-    home = _score_obj(event, "home")
-    away = _score_obj(event, "away")
-    home_total = _score_value(home, "current", "display")
-    away_total = _score_value(away, "current", "display")
-    if home_total is None or away_total is None:
+    home = _score_value(_score_obj(event, "home"), "current", "display")
+    away = _score_value(_score_obj(event, "away"), "current", "display")
+    if home is None or away is None:
         return ""
-    return f"{_fmt_score_value(home_total)}-{_fmt_score_value(away_total)}"
+    return f"{_fmt(home)}-{_fmt(away)}"
 
 
 def set_scores(event: Dict[str, Any]) -> List[str]:
     home = _score_obj(event, "home")
     away = _score_obj(event, "away")
-    sets: List[str] = []
-
+    out: List[str] = []
     for idx in range(1, 6):
-        home_games = _score_value(home, f"period{idx}")
-        away_games = _score_value(away, f"period{idx}")
-        if home_games is None or away_games is None:
+        h = _score_value(home, f"period{idx}")
+        a = _score_value(away, f"period{idx}")
+        if h is None or a is None:
             continue
+        item = f"{_fmt(h)}-{_fmt(a)}"
+        ht = _score_value(home, f"period{idx}TieBreak")
+        at = _score_value(away, f"period{idx}TieBreak")
+        if ht not in (None, 0, "0") or at not in (None, 0, "0"):
+            item += f" ({_fmt(ht or 0)}-{_fmt(at or 0)})"
+        out.append(item)
+    return out
 
-        item = f"{_fmt_score_value(home_games)}-{_fmt_score_value(away_games)}"
-        home_tb = _score_value(home, f"period{idx}TieBreak")
-        away_tb = _score_value(away, f"period{idx}TieBreak")
-        if home_tb not in (None, 0, "0") or away_tb not in (None, 0, "0"):
-            item += f" ({_fmt_score_value(home_tb or 0)}-{_fmt_score_value(away_tb or 0)})"
-        sets.append(item)
 
-    return sets
+def compact_score(event: Dict[str, Any]) -> str:
+    total = final_score(event)
+    sets = set_scores(event)
+    if total and sets:
+        return f"{total} ({', '.join(sets)})"
+    if total:
+        return total
+    if sets:
+        return f"({', '.join(sets)})"
+    return ""
+
+
+async def _match_feed(match_id: str, feed: str) -> Optional[str]:
+    return await _fetch_text(f"{FLASHSCORE_BASE}/x/feed/{feed}_{match_id}", {"Referer": f"{FLASHSCORE_BASE}/match/{match_id}/"})
+
+
+def _parse_stats(text: Optional[str]) -> Dict[str, Dict[str, str]]:
+    stats: Dict[str, Dict[str, str]] = {}
+    scope = ""
+    for record in (text or "").split("¬~"):
+        fields = _fields(record)
+        if fields.get("SE"):
+            scope = fields["SE"]
+        if scope == "Match" and fields.get("SG"):
+            stats[fields["SG"]] = {"home": fields.get("SH") or "", "away": fields.get("SI") or ""}
+    return stats
+
+
+def _parse_summary(text: Optional[str]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"sets": []}
+    for record in (text or "").split("¬~"):
+        fields = _fields(record)
+        if fields.get("AC"):
+            out["sets"].append({"name": fields.get("AC"), "duration": fields.get("RC") or fields.get("RD")})
+        if fields.get("RB"):
+            out["duration"] = fields["RB"]
+    return out
+
+
+async def enrich_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    raw = event.get("raw") or {}
+    match_id = raw.get("flashscore_id") or event.get("custom_id")
+    if raw.get("source") != "flashscore" or not match_id:
+        return event
+    try:
+        stats_text, summary_text = await asyncio.gather(_match_feed(str(match_id), "df_st_2"), _match_feed(str(match_id), "df_sui_2"))
+        raw["flashscore_stats"] = _parse_stats(stats_text)
+        raw["flashscore_summary"] = _parse_summary(summary_text)
+        event["raw"] = raw
+    except Exception as exc:
+        raw["flashscore_stats_error"] = str(exc)
+        event["raw"] = raw
+    return event
+
+
+def _stat_pair(stats: Dict[str, Dict[str, str]], name: str) -> Optional[str]:
+    row = stats.get(name) or {}
+    home, away = row.get("home"), row.get("away")
+    if not home and not away:
+        return None
+    return f"{home or '-'} - {away or '-'}"
+
+
+def _stats_lines(event: Dict[str, Any]) -> List[str]:
+    raw = event.get("raw") or {}
+    stats = raw.get("flashscore_stats") or {}
+    if not isinstance(stats, dict) or not stats:
+        return []
+    lines: List[str] = []
+    duration = ((raw.get("flashscore_summary") or {}).get("duration") or "").strip()
+    if duration:
+        lines.append(f"Длительность: {duration}")
+    pairs = [
+        ("Aces", "эйсы"),
+        ("Double Faults", "двойные"),
+        ("Winners", "виннерсы"),
+        ("Unforced errors", "невынужденные"),
+        ("1st serve points won", "очки на первой подаче"),
+        ("Break Points Converted", "брейк-пойнты"),
+        ("Total Points Won", "всего очков"),
+    ]
+    for key, label in pairs:
+        value = _stat_pair(stats, key)
+        if value:
+            lines.append(f"{label}: {value}")
+    return lines[:7]
 
 
 def winner_name(event: Dict[str, Any]) -> str:
-    raw = event.get("raw") or {}
-    winner_code = raw.get("winnerCode")
-    if str(winner_code) == "1":
+    winner = (event.get("raw") or {}).get("winnerCode")
+    if str(winner) == "1":
         return str(event.get("home_name") or "")
-    if str(winner_code) == "2":
+    if str(winner) == "2":
         return str(event.get("away_name") or "")
     return ""
 
 
 def result_message(event: Dict[str, Any]) -> str:
     lines = [
-        "Матч завершен",
+        status_label(event),
         f"{event.get('tour_label') or tour_label(event.get('tour_group', ''))}: {event.get('tournament_name') or 'Турнир'}",
         "",
         f"{event.get('home_name') or 'TBD'} - {event.get('away_name') or 'TBD'}",
     ]
-
-    total = final_score(event)
-    if total:
-        lines.append(f"Итог: {total}")
-
-    sets = set_scores(event)
-    if sets:
-        lines.append(f"По сетам: {', '.join(sets)}")
-
+    score = compact_score(event)
+    if score:
+        lines.append(f"Счет: {score}")
+    note = (((event.get("raw") or {}).get("status") or {}).get("detail") or "").strip()
+    if status_type(event) in {"cancelled", "retired", "walkover"} and note:
+        lines.append(f"Примечание: {note}")
     winner = winner_name(event)
     if winner:
         lines.append(f"Победитель: {winner}")
-
+    stats = _stats_lines(event)
+    if stats:
+        lines.append("")
+        lines.append("Краткая статистика:")
+        lines.extend(stats)
     return "\n".join(lines).strip()
