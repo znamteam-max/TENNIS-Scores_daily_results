@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+TOUR_LABELS = {
+    "men": "Мужской тур",
+    "women": "Женский тур",
+}
+
 BASES = [
     "https://api.sofascore.com/api/v1",
     "https://www.sofascore.com/api/v1",
@@ -122,6 +127,31 @@ def classify(ev: Dict[str, Any]) -> str:
     return "Other"
 
 
+def tour_group(ev: Dict[str, Any]) -> str:
+    category = classify(ev)
+    cname = _category_name(ev)
+    tname = _lower(_tournament_name(ev), _season_name(ev))
+    hay = f"{cname} {tname}"
+
+    if category == "WTA" or "wta" in hay or "women" in hay or "female" in hay:
+        return "women"
+
+    if any(x in hay for x in ["w15", "w25", "w35", "w50", "w75", "w100"]):
+        return "women"
+
+    if category in {"ATP", "Challenger"} or "atp" in hay or "challenger" in hay or "men" in hay or "male" in hay:
+        return "men"
+
+    if any(x in hay for x in ["m15", "m25", "m35", "m50"]):
+        return "men"
+
+    return "other"
+
+
+def tour_label(group: str) -> str:
+    return TOUR_LABELS.get(group, "Другой тур")
+
+
 def _side_name(ev: Dict[str, Any], side: str) -> str:
     keys = ["homePlayer", "homeCompetitor", "homeTeam", "home"] if side == "home" else ["awayPlayer", "awayCompetitor", "awayTeam", "away"]
     for k in keys:
@@ -153,6 +183,7 @@ def _start_ts(ev: Dict[str, Any]) -> Optional[int]:
 def normalize_event(ev: Dict[str, Any]) -> Dict[str, Any]:
     tournament_name = _tournament_name(ev)
     category_name = classify(ev)
+    group = tour_group(ev)
 
     return {
         "event_id": int(ev.get("id")),
@@ -160,6 +191,8 @@ def normalize_event(ev: Dict[str, Any]) -> Dict[str, Any]:
         "tournament_name": tournament_name,
         "season_name": _season_name(ev),
         "category": category_name,
+        "tour_group": group,
+        "tour_label": tour_label(group),
         "home_name": _side_name(ev, "home"),
         "away_name": _side_name(ev, "away"),
         "start_ts": _start_ts(ev),
@@ -187,6 +220,13 @@ def filter_by_category(events: List[Dict[str, Any]], category: str) -> List[Dict
     return [e for e in events if e.get("category") == category]
 
 
+def filter_by_tour_group(events: List[Dict[str, Any]], group: str) -> List[Dict[str, Any]]:
+    group = (group or "").strip().lower()
+    if not group:
+        return events
+    return [e for e in events if e.get("tour_group") == group]
+
+
 def tournaments_for_category(events: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
     rows = filter_by_category(events, category)
     bucket: Dict[str, Dict[str, Any]] = {}
@@ -204,8 +244,124 @@ def tournaments_for_category(events: List[Dict[str, Any]], category: str) -> Lis
     return sorted(bucket.values(), key=lambda x: (x["tournament_name"].lower(), x["matches_count"]))
 
 
+def tournaments_for_tour_group(events: List[Dict[str, Any]], group: str) -> List[Dict[str, Any]]:
+    rows = filter_by_tour_group(events, group)
+    bucket: Dict[str, Dict[str, Any]] = {}
+
+    for e in rows:
+        key = e["tournament_name"]
+        if key not in bucket:
+            bucket[key] = {
+                "tournament_name": e["tournament_name"],
+                "tour_group": e["tour_group"],
+                "tour_label": e["tour_label"],
+                "matches_count": 0,
+            }
+        bucket[key]["matches_count"] += 1
+
+    return sorted(bucket.values(), key=lambda x: (x["tournament_name"].lower(), x["matches_count"]))
+
+
 def matches_for_tournament(events: List[Dict[str, Any]], category: str, tournament_name: str) -> List[Dict[str, Any]]:
     rows = filter_by_category(events, category)
     rows = [e for e in rows if e["tournament_name"] == tournament_name]
     rows.sort(key=lambda x: (x["start_ts"] or 0, x["home_name"], x["away_name"]))
     return rows
+
+
+def matches_for_tournament_in_tour(events: List[Dict[str, Any]], group: str, tournament_name: str) -> List[Dict[str, Any]]:
+    rows = filter_by_tour_group(events, group)
+    rows = [e for e in rows if e["tournament_name"] == tournament_name]
+    rows.sort(key=lambda x: (x["start_ts"] or 0, x["home_name"], x["away_name"]))
+    return rows
+
+
+def is_finished(event: Dict[str, Any]) -> bool:
+    raw = event.get("raw") or {}
+    status = (event.get("status_type") or ((raw.get("status") or {}).get("type") or "")).lower()
+    return status == "finished"
+
+
+def _score_obj(event: Dict[str, Any], side: str) -> Dict[str, Any]:
+    raw = event.get("raw") or {}
+    key = "homeScore" if side == "home" else "awayScore"
+    obj = raw.get(key) or {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _score_value(score: Dict[str, Any], *keys: str) -> Optional[Any]:
+    for key in keys:
+        value = score.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _fmt_score_value(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def final_score(event: Dict[str, Any]) -> str:
+    home = _score_obj(event, "home")
+    away = _score_obj(event, "away")
+    home_total = _score_value(home, "current", "display")
+    away_total = _score_value(away, "current", "display")
+    if home_total is None or away_total is None:
+        return ""
+    return f"{_fmt_score_value(home_total)}-{_fmt_score_value(away_total)}"
+
+
+def set_scores(event: Dict[str, Any]) -> List[str]:
+    home = _score_obj(event, "home")
+    away = _score_obj(event, "away")
+    sets: List[str] = []
+
+    for idx in range(1, 6):
+        home_games = _score_value(home, f"period{idx}")
+        away_games = _score_value(away, f"period{idx}")
+        if home_games is None or away_games is None:
+            continue
+
+        item = f"{_fmt_score_value(home_games)}-{_fmt_score_value(away_games)}"
+        home_tb = _score_value(home, f"period{idx}TieBreak")
+        away_tb = _score_value(away, f"period{idx}TieBreak")
+        if home_tb not in (None, 0, "0") or away_tb not in (None, 0, "0"):
+            item += f" ({_fmt_score_value(home_tb or 0)}-{_fmt_score_value(away_tb or 0)})"
+        sets.append(item)
+
+    return sets
+
+
+def winner_name(event: Dict[str, Any]) -> str:
+    raw = event.get("raw") or {}
+    winner_code = raw.get("winnerCode")
+    if str(winner_code) == "1":
+        return str(event.get("home_name") or "")
+    if str(winner_code) == "2":
+        return str(event.get("away_name") or "")
+    return ""
+
+
+def result_message(event: Dict[str, Any]) -> str:
+    lines = [
+        "Матч завершен",
+        f"{event.get('tour_label') or tour_label(event.get('tour_group', ''))}: {event.get('tournament_name') or 'Турнир'}",
+        "",
+        f"{event.get('home_name') or 'TBD'} - {event.get('away_name') or 'TBD'}",
+    ]
+
+    total = final_score(event)
+    if total:
+        lines.append(f"Итог: {total}")
+
+    sets = set_scores(event)
+    if sets:
+        lines.append(f"По сетам: {', '.join(sets)}")
+
+    winner = winner_name(event)
+    if winner:
+        lines.append(f"Победитель: {winner}")
+
+    return "\n".join(lines).strip()
