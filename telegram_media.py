@@ -1,26 +1,45 @@
 from __future__ import annotations
 
+import html
 import json
+import re
+import unicodedata
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
 from match_card import build_match_card_png
 from providers import sofascore as ss
 
+try:
+    from db_pg import ru_name_for, save_result_card
+except Exception:  # pragma: no cover - keeps local rendering usable without DB env
+    ru_name_for = None
+    save_result_card = None
+
 
 def _api_url(bot_token: str, method: str) -> str:
     return f"https://api.telegram.org/bot{bot_token}/{method}"
 
 
-def _post_json(url: str, payload: Dict[str, Any]) -> bool:
+def _decode_response(raw: bytes) -> Dict[str, Any]:
+    if not raw:
+        return {"ok": True}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else {"ok": True, "result": data}
+    except Exception:
+        return {"ok": True}
+
+
+def _post_json(url: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            resp.read()
-        return True
+            return _decode_response(resp.read())
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -30,7 +49,7 @@ def _post_json(url: str, payload: Dict[str, Any]) -> bool:
         print(f"[tg] request failed: status={exc.code} body={body}")
     except urllib.error.URLError as exc:
         print(f"[tg] request failed: {exc}")
-    return False
+    return None
 
 
 def _post_multipart(
@@ -40,7 +59,7 @@ def _post_multipart(
     filename: str,
     content_type: str,
     file_bytes: bytes,
-) -> bool:
+) -> Optional[Dict[str, Any]]:
     boundary = f"----tennis-card-{uuid.uuid4().hex}"
     chunks: list[bytes] = []
 
@@ -70,8 +89,7 @@ def _post_multipart(
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            resp.read()
-        return True
+            return _decode_response(resp.read())
     except urllib.error.HTTPError as exc:
         body_text = ""
         try:
@@ -81,18 +99,181 @@ def _post_multipart(
         print(f"[tg] media failed: status={exc.code} body={body_text}")
     except urllib.error.URLError as exc:
         print(f"[tg] media failed: {exc}")
-    return False
+    return None
+
+
+def _has_cyrillic(text: str) -> bool:
+    return any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in text)
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+
+
+def _slug(text: str) -> str:
+    cleaned = _strip_accents(text).lower()
+    cleaned = re.sub(r"[^a-z0-9]+", "-", cleaned).strip("-")
+    return cleaned
+
+
+def _sports_ru_name(name: str) -> str:
+    parts = [p for p in re.split(r"\s+", _strip_accents(name).strip()) if p and not re.fullmatch(r"[A-Za-z]\.??", p)]
+    if not parts:
+        return ""
+    candidates = []
+    candidates.append(_slug(" ".join(parts)))
+    if len(parts) >= 2:
+        candidates.append(_slug(f"{parts[-1]} {' '.join(parts[:-1])}"))
+    candidates.append(_slug(parts[0]))
+
+    for slug in dict.fromkeys(x for x in candidates if x):
+        url = f"https://www.sports.ru/tennis/person/{urllib.parse.quote(slug)}/"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                page = resp.read().decode("utf-8", "replace")
+            match = re.search(r"<h1[^>]*>(.*?)</h1>", page, flags=re.I | re.S)
+            if not match:
+                match = re.search(r"<title>(.*?):", page, flags=re.I | re.S)
+            if not match:
+                continue
+            value = html.unescape(re.sub(r"<[^>]+>", " ", match.group(1)))
+            value = " ".join(value.split())
+            if value and _has_cyrillic(value):
+                return value
+        except Exception:
+            continue
+    return ""
+
+
+def _latin_to_ru(text: str) -> str:
+    combos = [
+        ("shch", "щ"),
+        ("sch", "ш"),
+        ("kh", "х"),
+        ("ch", "ч"),
+        ("sh", "ш"),
+        ("zh", "ж"),
+        ("ts", "ц"),
+        ("ya", "я"),
+        ("ja", "я"),
+        ("yu", "ю"),
+        ("ju", "ю"),
+        ("yo", "ё"),
+        ("jo", "ё"),
+        ("ye", "е"),
+        ("ck", "к"),
+        ("ph", "ф"),
+    ]
+    chars = {
+        "a": "а",
+        "b": "б",
+        "c": "к",
+        "d": "д",
+        "e": "е",
+        "f": "ф",
+        "g": "г",
+        "h": "х",
+        "i": "и",
+        "j": "дж",
+        "k": "к",
+        "l": "л",
+        "m": "м",
+        "n": "н",
+        "o": "о",
+        "p": "п",
+        "q": "к",
+        "r": "р",
+        "s": "с",
+        "t": "т",
+        "u": "у",
+        "v": "в",
+        "w": "в",
+        "x": "кс",
+        "y": "и",
+        "z": "з",
+    }
+    out: list[str] = []
+    src = _strip_accents(text).lower()
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if not ("a" <= ch <= "z"):
+            out.append(ch)
+            i += 1
+            continue
+        for latin, ru in combos:
+            if src.startswith(latin, i):
+                out.append(ru)
+                i += len(latin)
+                break
+        else:
+            out.append(chars.get(ch, ch))
+            i += 1
+    return "".join(out)
+
+
+def _ru_name(name: Any) -> str:
+    raw = " ".join(str(name or "").split())
+    if not raw:
+        return raw
+    if _has_cyrillic(raw):
+        return raw
+    if ru_name_for:
+        try:
+            alias, ok = ru_name_for(raw)
+            if ok and alias:
+                return alias
+        except Exception as exc:
+            print(f"[names] alias lookup failed: {exc}")
+    sports = _sports_ru_name(raw)
+    if sports:
+        return sports
+    return _latin_to_ru(raw).title()
+
+
+def _card_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    data = json.loads(json.dumps(event, ensure_ascii=False, default=str))
+    data.setdefault("card_original_home_name", data.get("home_name") or "")
+    data.setdefault("card_original_away_name", data.get("away_name") or "")
+    data["home_name"] = _ru_name(data.get("home_name"))
+    data["away_name"] = _ru_name(data.get("away_name"))
+    return data
+
+
+def _review_markup(card_id: str) -> Dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "все ок", "callback_data": f"card_ok|{card_id}"},
+                {"text": "исправить", "callback_data": f"card_fix|{card_id}"},
+            ]
+        ]
+    }
+
+
+def _send_review_menu(bot_token: str, chat_id: int, card_id: str) -> None:
+    _post_json(
+        _api_url(bot_token, "sendMessage"),
+        {
+            "chat_id": chat_id,
+            "text": "Плашка опубликована. Проверить?",
+            "reply_markup": _review_markup(card_id),
+        },
+    )
 
 
 def send_match_result(bot_token: str, chat_id: int, event: Dict[str, Any]) -> bool:
     if not bot_token:
         return False
 
+    card_id = uuid.uuid4().hex[:12]
+    event = _card_event(event)
     text = ss.result_message(event)
     try:
         png = build_match_card_png(event)
         caption: Optional[str] = text if len(text) <= 1000 else None
-        document_ok = _post_multipart(
+        document = _post_multipart(
             _api_url(bot_token, "sendDocument"),
             {"chat_id": chat_id, "caption": caption},
             "document",
@@ -100,11 +281,17 @@ def send_match_result(bot_token: str, chat_id: int, event: Dict[str, Any]) -> bo
             "image/png",
             png,
         )
-        if document_ok:
+        if document:
+            if save_result_card:
+                try:
+                    save_result_card(card_id, chat_id, event)
+                except Exception as exc:
+                    print(f"[card] save failed: {exc}")
             if caption is None:
-                return _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
+                _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
+            _send_review_menu(bot_token, chat_id, card_id)
             return True
     except Exception as exc:
         print(f"[card] render/send failed: {exc}")
 
-    return _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
+    return bool(_post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text}))
