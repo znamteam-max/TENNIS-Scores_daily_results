@@ -16,6 +16,7 @@ from db_pg import (
     set_events_cache,
 )
 from providers import sofascore as ss
+from telegram_media import send_match_result
 
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -79,7 +80,7 @@ async def run_once() -> None:
                 continue
 
             event = await ss.enrich_event(event)
-            if _tg_send_message(int(watch["chat_id"]), ss.result_message(event)):
+            if send_match_result(BOT_TOKEN, int(watch["chat_id"]), event):
                 if mark_match_notified(int(watch["chat_id"]), day, int(watch["event_id"])):
                     sent += 1
 
