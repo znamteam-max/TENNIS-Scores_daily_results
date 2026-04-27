@@ -1,48 +1,33 @@
 from __future__ import annotations
 
 import os
-import re
 import urllib.request
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict
 
 
-WIDTH = 1024
-HEIGHT = 1280
-LEFT_BAR_W = 62
-BOTTOM_Y = 1018
+W, H = 1024, 1280
+LEFT_W, BOTTOM_Y = 62, 1018
 PANEL = (21, 20, 25, 255)
 WHITE = (246, 246, 246, 255)
 GREEN = (216, 255, 48, 255)
 LINE = (232, 232, 232, 235)
 
-FONT_URLS = {
+FONT_URL = {
     "medium": "https://raw.githubusercontent.com/google/fonts/main/ofl/sofiasans/SofiaSans%5Bwght%5D.ttf",
-    "semibold_italic": "https://raw.githubusercontent.com/google/fonts/main/ofl/sofiasans/SofiaSans-Italic%5Bwght%5D.ttf",
+    "italic": "https://raw.githubusercontent.com/google/fonts/main/ofl/sofiasans/SofiaSans-Italic%5Bwght%5D.ttf",
 }
-
-
-def _font_path(kind: str) -> str:
-    local_names = {
-        "medium": "SofiaSans-Medium.ttf",
-        "semibold_italic": "SofiaSans-SemiBoldItalic.ttf",
-    }
-    here = os.path.dirname(os.path.abspath(__file__))
-    local_path = os.path.join(here, "assets", "fonts", local_names[kind])
-    if os.path.exists(local_path):
-        return local_path
-
-    cached = os.path.join("/tmp", os.path.basename(local_names[kind]))
-    if not os.path.exists(cached):
-        urllib.request.urlretrieve(FONT_URLS[kind], cached)
-    return cached
 
 
 def _font(kind: str, size: int):
     from PIL import ImageFont
 
+    name = "SofiaSans[wght].ttf" if kind == "medium" else "SofiaSans-Italic[wght].ttf"
+    path = os.path.join("/tmp", name)
+    if not os.path.exists(path):
+        urllib.request.urlretrieve(FONT_URL[kind], path)
     try:
-        font = ImageFont.truetype(_font_path(kind), size)
+        font = ImageFont.truetype(path, size)
         if hasattr(font, "set_variation_by_axes"):
             try:
                 font.set_variation_by_axes([500 if kind == "medium" else 600])
@@ -53,30 +38,143 @@ def _font(kind: str, size: int):
         return ImageFont.load_default()
 
 
-def _text_size(draw: Any, text: str, font: Any) -> Tuple[int, int]:
+def _size(draw: Any, text: str, font: Any) -> tuple[int, int]:
     box = draw.textbbox((0, 0), text, font=font)
     return box[2] - box[0], box[3] - box[1]
 
 
-def _fit_font(draw: Any, text: str, kind: str, size: int, max_width: int, min_size: int = 24):
-    font = _font(kind, size)
-    while size > min_size and _text_size(draw, text, font)[0] > max_width:
+def _fit(draw: Any, text: str, size: int, width: int):
+    font = _font("italic", size)
+    while size > 26 and _size(draw, text, font)[0] > width:
         size -= 2
-        font = _font(kind, size)
+        font = _font("italic", size)
     return font
 
 
-def _draw_right_aligned(draw: Any, xy: Tuple[int, int], text: str, font: Any, fill: Tuple[int, int, int, int]) -> None:
-    x, y = xy
-    width, _ = _text_size(draw, text, font)
-    draw.text((x - width, y), text, font=font, fill=fill)
+def _right(draw: Any, x: int, y: int, text: str, font: Any, fill: tuple[int, int, int, int]) -> None:
+    tw, _ = _size(draw, text, font)
+    draw.text((x - tw, y), text, font=font, fill=fill)
 
 
 def _surname(name: str) -> str:
-    raw = " ".join(str(name or "").replace(",", " ").split())
-    if not raw:
-        return "TBD"
+    raw = " ".join(str(name or "TBD").replace(",", " ").split())
     if "/" in raw:
-        return " / ".join(_surname(part) for part in raw.split("/"))
+        return " / ".join(_surname(x) for x in raw.split("/"))
     parts = raw.split()
-    if len(parts) > 1 and re.fullmatch(r"[A-ZА-ЯЁ]\.?",
+    if len(parts) > 1 and len(parts[-1].replace(".", "")) == 1:
+        return " ".join(parts[:-1]).upper()
+    return parts[-1].upper() if parts else "TBD"
+
+
+def _score(event: Dict[str, Any], side: str) -> Dict[str, Any]:
+    raw = event.get("raw") or {}
+    obj = raw.get("homeScore" if side == "home" else "awayScore") or {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _val(score: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if score.get(key) is not None:
+            return score.get(key)
+    return ""
+
+
+def _fmt(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _scores(event: Dict[str, Any]) -> tuple[list[str], list[str]]:
+    home, away = _score(event, "home"), _score(event, "away")
+    h = [_fmt(_val(home, "current", "display"))]
+    a = [_fmt(_val(away, "current", "display"))]
+    for idx in range(1, 6):
+        hv, av = _val(home, f"period{idx}"), _val(away, f"period{idx}")
+        if hv == "" or av == "":
+            continue
+        h.append(_fmt(hv))
+        a.append(_fmt(av))
+    return h[:4], a[:4]
+
+
+def _winner(event: Dict[str, Any]) -> str:
+    code = (event.get("raw") or {}).get("winnerCode")
+    if str(code) == "1":
+        return "home"
+    if str(code) == "2":
+        return "away"
+    try:
+        return "home" if float(_scores(event)[0][0]) > float(_scores(event)[1][0]) else "away"
+    except Exception:
+        return ""
+
+
+def _stage(event: Dict[str, Any]) -> str:
+    raw = event.get("raw") or {}
+    for key in ("round", "stage", "flashscore_round"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().upper()
+    return "МАТЧ ЗАВЕРШЕН"
+
+
+def _tour_line(event: Dict[str, Any]) -> str:
+    category = str(event.get("category") or "").upper()
+    tournament = str(event.get("tournament_name") or "ТУРНИР").upper()
+    if "(" in tournament:
+        tournament = tournament.split("(", 1)[0].strip()
+    return f"{category} {tournament}   {_stage(event)}".strip()
+
+
+def _left_bar(img: Any, text: str) -> None:
+    from PIL import Image, ImageDraw
+
+    bar = Image.new("RGBA", (LEFT_W, H), (0, 0, 0, 0))
+    px = bar.load()
+    for y in range(H):
+        t = y / (H - 1)
+        top, mid, bot = (60, 26, 128), (84, 48, 155), (218, 255, 48)
+        a, b, k = (top, mid, t / 0.56) if t < 0.56 else (mid, bot, (t - 0.56) / 0.44)
+        for x in range(LEFT_W):
+            grain = ((x * 17 + y * 23) % 37) - 18
+            px[x, y] = tuple(max(0, min(255, int(a[i] + (b[i] - a[i]) * k + grain * 0.6))) for i in range(3)) + (255,)
+
+    tmp = Image.new("RGBA", (H, LEFT_W), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tmp)
+    d.text((58, 14), text, font=_font("medium", 28), fill=WHITE)
+    bar.alpha_composite(tmp.rotate(90, expand=True), (0, 0))
+    img.alpha_composite(bar, (0, 0))
+
+
+def build_match_card_png(event: Dict[str, Any]) -> bytes:
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    _left_bar(img, _tour_line(event))
+    draw.rectangle((LEFT_W, BOTTOM_Y, W, H), fill=PANEL)
+
+    name_x, y1, y2 = 118, 1064, 1167
+    score_y1, score_y2 = 1060, 1163
+    cols = [668, 770, 872, 975]
+    draw.line((name_x, 1156, 995, 1156), fill=LINE, width=2)
+    for x in (704, 805, 907):
+        draw.line((x, 1068, x, 1240), fill=LINE, width=2)
+
+    home_name = _surname(str(event.get("home_name") or "TBD"))
+    away_name = _surname(str(event.get("away_name") or "TBD"))
+    winner = _winner(event)
+    draw.text((name_x, y1), home_name, font=_fit(draw, home_name, 72, 445), fill=GREEN if winner == "home" else WHITE)
+    draw.text((name_x, y2), away_name, font=_fit(draw, away_name, 72, 445), fill=GREEN if winner == "away" else WHITE)
+
+    home_scores, away_scores = _scores(event)
+    score_font = _font("italic", 72)
+    for idx, value in enumerate(home_scores):
+        _right(draw, cols[idx], score_y1, value, score_font, GREEN if idx == 0 and winner == "home" else WHITE)
+    for idx, value in enumerate(away_scores):
+        _right(draw, cols[idx], score_y2, value, score_font, GREEN if idx == 0 and winner == "away" else WHITE)
+
+    out = BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
