@@ -65,6 +65,8 @@ def ensure_schema() -> None:
         start_ts bigint,
         primary key (chat_id, day, event_id)
     );
+
+    alter table match_watches add column if not exists notified_at timestamptz;
     """
     with _conn() as con, con.cursor() as cur:
         cur.execute(sql)
@@ -318,3 +320,61 @@ def list_match_watches(chat_id: int, day: dt.date) -> List[Dict[str, Any]]:
                 }
             )
         return rows
+
+
+def list_pending_match_watch_days() -> List[dt.date]:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            select distinct day
+            from match_watches
+            where notified_at is null
+              and day >= (current_date - interval '3 days')
+            order by day
+            """
+        )
+        return [r[0] for r in cur.fetchall()]
+
+
+def list_pending_match_watches(day: dt.date) -> List[Dict[str, Any]]:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            select chat_id, event_id, category, tournament_name, home_name, away_name, start_ts
+            from match_watches
+            where day=%s
+              and notified_at is null
+            order by chat_id, tournament_name, start_ts nulls last, home_name, away_name
+            """,
+            (day,),
+        )
+        rows = []
+        for r in cur.fetchall():
+            rows.append(
+                {
+                    "chat_id": r[0],
+                    "event_id": r[1],
+                    "category": r[2],
+                    "tournament_name": r[3],
+                    "home_name": r[4],
+                    "away_name": r[5],
+                    "start_ts": r[6],
+                }
+            )
+        return rows
+
+
+def mark_match_notified(chat_id: int, day: dt.date, event_id: int) -> bool:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            update match_watches
+            set notified_at=now()
+            where chat_id=%s
+              and day=%s
+              and event_id=%s
+              and notified_at is null
+            """,
+            (chat_id, day, int(event_id)),
+        )
+        return cur.rowcount > 0
