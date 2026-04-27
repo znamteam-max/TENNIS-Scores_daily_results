@@ -25,6 +25,7 @@ from db_pg import (
     set_tz,
 )
 from providers import sofascore as ss
+from telegram_media import send_match_result
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -337,7 +338,7 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
             add_match_watch(chat_id, _today(chat_id), match)
             if ss.is_finished(match):
                 match = asyncio.run(ss.enrich_event(match))
-                tg_send_message(chat_id, ss.result_message(match))
+                send_match_result(BOT_TOKEN, chat_id, match)
                 mark_match_notified(chat_id, _today(chat_id), event_id)
                 notice = "Матч уже завершен, результат отправлен отдельным сообщением"
             else:
