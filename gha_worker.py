@@ -34,7 +34,7 @@ def _tg_send_message(chat_id: int, text: str) -> bool:
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+    payload = json.dumps({"chat_id": chat_id, "text": text}, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
@@ -78,6 +78,7 @@ async def run_once() -> None:
             if not event or not ss.is_finished(event):
                 continue
 
+            event = await ss.enrich_event(event)
             if _tg_send_message(int(watch["chat_id"]), ss.result_message(event)):
                 if mark_match_notified(int(watch["chat_id"]), day, int(watch["event_id"])):
                     sent += 1
