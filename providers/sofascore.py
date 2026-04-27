@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import random
 from typing import Any, Dict, List, Optional
 
@@ -64,15 +65,205 @@ async def events_by_date(d: dt.date) -> Dict[str, Any]:
     for base in BASES:
         for path in paths:
             data = await _fetch_json(f"{base}{path}")
-            if data and isinstance(data, dict) and isinstance(data.get("events"), list):
+            if data and isinstance(data, dict) and isinstance(data.get("events"), list) and data.get("events"):
                 return data
             await asyncio.sleep(0.4)
+
+    espn = await espn_events_by_date(d)
+    if espn.get("events"):
+        return espn
 
     live = await _fetch_json(f"{BASES[0]}/sport/tennis/events/live")
     if live and isinstance(live.get("events"), list):
         return live
 
     return {"events": []}
+
+
+def _espn_ds(d: dt.date) -> str:
+    return d.strftime("%Y%m%d")
+
+
+def _parse_espn_dt(value: Any) -> Optional[dt.datetime]:
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _espn_event_id(raw_id: Any) -> int:
+    text = str(raw_id or "").strip()
+    if text.isdigit():
+        return 900_000_000 + int(text)
+    digest = hashlib.md5(text.encode("utf-8")).hexdigest()
+    return 900_000_000 + (int(digest[:8], 16) % 90_000_000)
+
+
+def _espn_group_category(grouping: Dict[str, Any], league: str) -> str:
+    grouping_obj = grouping.get("grouping") or {}
+    group_text = _lower(
+        grouping_obj.get("slug"),
+        grouping_obj.get("displayName"),
+        grouping_obj.get("name"),
+    )
+    if "women" in group_text or league == "wta":
+        return "WTA"
+    if "men" in group_text or league == "atp":
+        return "ATP"
+    return league.upper()
+
+
+def _espn_competitor_name(comp: Dict[str, Any]) -> str:
+    for key in ("athlete", "roster", "team"):
+        obj = comp.get(key) or {}
+        if isinstance(obj, dict):
+            name = obj.get("displayName") or obj.get("fullName") or obj.get("name") or obj.get("shortDisplayName")
+            if name:
+                return str(name).replace("  ", " ").strip()
+    for key in ("displayName", "name", "shortDisplayName"):
+        name = comp.get(key)
+        if name:
+            return str(name).replace("  ", " ").strip()
+    return "TBD"
+
+
+def _espn_competitors(comp: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    competitors = comp.get("competitors") or []
+    if not isinstance(competitors, list):
+        competitors = []
+
+    home = next((c for c in competitors if (c or {}).get("homeAway") == "home"), None)
+    away = next((c for c in competitors if (c or {}).get("homeAway") == "away"), None)
+    ordered = sorted(
+        [c for c in competitors if isinstance(c, dict)],
+        key=lambda c: c.get("order") if isinstance(c.get("order"), int) else 99,
+    )
+
+    if not home and ordered:
+        home = ordered[0]
+    if not away and len(ordered) > 1:
+        away = ordered[1]
+
+    return home or {}, away or {}
+
+
+def _espn_score(comp: Dict[str, Any]) -> Dict[str, Any]:
+    score: Dict[str, Any] = {}
+    sets_won = 0
+    lines = comp.get("linescores") or []
+    if not isinstance(lines, list):
+        lines = []
+
+    for idx, line in enumerate(lines[:5], start=1):
+        if not isinstance(line, dict):
+            continue
+        if line.get("winner") is True:
+            sets_won += 1
+        if line.get("value") is not None:
+            score[f"period{idx}"] = line.get("value")
+        tb = line.get("tiebreak") or line.get("tieBreak") or line.get("tiebreakValue")
+        if tb is not None:
+            score[f"period{idx}TieBreak"] = tb
+
+    raw_score = comp.get("score")
+    try:
+        score["current"] = int(float(raw_score))
+    except Exception:
+        if lines:
+            score["current"] = sets_won
+    return score
+
+
+def _espn_status(comp: Dict[str, Any]) -> str:
+    status_type = ((comp.get("status") or {}).get("type") or {})
+    state = str(status_type.get("state") or "").lower()
+    name = str(status_type.get("name") or "").lower()
+    completed = bool(status_type.get("completed"))
+
+    if completed or state == "post" or "final" in name:
+        return "finished"
+    if state == "in" or "progress" in name:
+        return "inprogress"
+    return "notstarted"
+
+
+def _espn_winner_code(home: Dict[str, Any], away: Dict[str, Any]) -> Optional[int]:
+    if home.get("winner") is True:
+        return 1
+    if away.get("winner") is True:
+        return 2
+    return None
+
+
+def _espn_match_event(
+    tournament: Dict[str, Any],
+    grouping: Dict[str, Any],
+    comp: Dict[str, Any],
+    league: str,
+) -> Optional[Dict[str, Any]]:
+    start = _parse_espn_dt(comp.get("date") or comp.get("startDate"))
+    if not start:
+        return None
+
+    category = _espn_group_category(grouping, league)
+    grouping_obj = grouping.get("grouping") or {}
+    group_name = grouping_obj.get("displayName") or grouping_obj.get("name") or grouping_obj.get("slug") or ""
+    home, away = _espn_competitors(comp)
+    winner_code = _espn_winner_code(home, away)
+
+    event = {
+        "id": _espn_event_id(comp.get("id") or comp.get("uid")),
+        "customId": comp.get("uid"),
+        "tournament": {
+            "name": tournament.get("name") or tournament.get("shortName") or "Tournament",
+            "uniqueTournament": {
+                "name": tournament.get("name") or tournament.get("shortName") or "Tournament",
+                "category": {"name": category, "slug": category.lower()},
+            },
+            "category": {"name": category, "slug": category.lower()},
+        },
+        "season": {"name": f"{tournament.get('season', {}).get('year') or ''} {group_name}".strip()},
+        "homeCompetitor": {"name": _espn_competitor_name(home)},
+        "awayCompetitor": {"name": _espn_competitor_name(away)},
+        "startTimestamp": int(start.timestamp()),
+        "status": {"type": _espn_status(comp)},
+        "homeScore": _espn_score(home),
+        "awayScore": _espn_score(away),
+        "source": "espn",
+    }
+    if winner_code:
+        event["winnerCode"] = winner_code
+    return event
+
+
+async def espn_events_by_date(d: dt.date) -> Dict[str, Any]:
+    events: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+
+    for league in ("atp", "wta"):
+        url = f"https://site.api.espn.com/apis/site/v2/sports/tennis/{league}/scoreboard?dates={_espn_ds(d)}"
+        data = await _fetch_json(url)
+        if not data:
+            continue
+
+        for tournament in data.get("events", []) or []:
+            for grouping in tournament.get("groupings", []) or []:
+                for comp in grouping.get("competitions", []) or []:
+                    start = _parse_espn_dt(comp.get("date") or comp.get("startDate"))
+                    if not start or start.date() != d:
+                        continue
+                    event = _espn_match_event(tournament, grouping, comp, league)
+                    if not event:
+                        continue
+                    event_id = int(event["id"])
+                    if event_id in seen:
+                        continue
+                    seen.add(event_id)
+                    events.append(event)
+
+    return {"events": events}
 
 
 def _lower(*parts: Any) -> str:
