@@ -34,6 +34,12 @@ from telegram_media import send_match_result
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DEFAULT_TZ = os.getenv("APP_TZ", "Europe/Helsinki")
+BOT_COMMANDS = [
+    {"command": "start", "description": "открыть главное меню"},
+    {"command": "today", "description": "выбрать матчи на сегодня"},
+    {"command": "my", "description": "показать выбранные матчи"},
+    {"command": "tz", "description": "сменить часовой пояс, например Europe/Helsinki"},
+]
 
 
 def _tg_api(method: str) -> str:
@@ -82,6 +88,11 @@ def tg_answer_callback_query(cb_id: str, text: Optional[str] = None, show_alert:
     if text:
         payload["text"] = text
     _post_json(_tg_api("answerCallbackQuery"), payload)
+
+
+def tg_set_my_commands() -> None:
+    if BOT_TOKEN:
+        _post_json(_tg_api("setMyCommands"), {"commands": BOT_COMMANDS})
 
 
 def _tz_for(chat_id: int) -> ZoneInfo:
@@ -153,6 +164,17 @@ def _card_fix_menu(card_id: str) -> Dict[str, Any]:
             [_btn("фамилии", f"card_edit|{card_id}|names")],
             [_btn("счёт", f"card_edit|{card_id}|score")],
             [_btn("назад", f"card_back|{card_id}")],
+        ]
+    )
+
+
+def _resend_match_menu(event_id: int) -> Dict[str, Any]:
+    return _kb(
+        [
+            [
+                _btn("Да, выслать", f"watch_resend|{event_id}"),
+                _btn("Нет", "noop"),
+            ]
         ]
     )
 
@@ -256,16 +278,24 @@ def _handle_card_edit_text(chat_id: int, text: str, payload: Dict[str, Any]) -> 
             tg_send_message(chat_id, "Не понял фамилии. Пришли двумя строками или через /, например: Соболенко / Осака")
             return
         home_name, away_name = names
+        home_sources = [
+            event.get("card_original_home_name"),
+            event.get("home_name"),
+            ((event.get("raw") or {}).get("homeCompetitor") or {}).get("name"),
+        ]
+        away_sources = [
+            event.get("card_original_away_name"),
+            event.get("away_name"),
+            ((event.get("raw") or {}).get("awayCompetitor") or {}).get("name"),
+        ]
         event["card_home_name"] = home_name
         event["card_away_name"] = away_name
         event["home_name"] = home_name
         event["away_name"] = away_name
-        for original, ru in (
-            (event.get("card_original_home_name"), home_name),
-            (event.get("card_original_away_name"), away_name),
-        ):
-            if original and ru:
-                set_alias(str(original), str(ru))
+        for sources, ru in ((home_sources, home_name), (away_sources, away_name)):
+            for original in sources:
+                if original and ru:
+                    set_alias(str(original), str(ru))
     elif field == "score":
         scores = _parse_score(value)
         if not scores:
@@ -458,6 +488,7 @@ def _handle_text(chat_id: int, text: str) -> None:
         cmd = cmd.split("@", 1)[0]
 
     if cmd in {"/start", "start", "/today", "today"}:
+        tg_set_my_commands()
         clear_state(chat_id)
         tg_send_message(chat_id, "Выбери тур на сегодня:", reply_markup=_tour_groups_menu(chat_id))
         return
@@ -482,6 +513,10 @@ def _handle_text(chat_id: int, text: str) -> None:
 
 def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> None:
     try:
+        if data == "noop":
+            tg_answer_callback_query(cq_id)
+            return
+
         if data.startswith("card_ok|"):
             _, card_id = data.split("|", 1)
             tg_edit_message(chat_id, message_id, "Ок, плашка принята.")
@@ -579,6 +614,15 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
             event_id = int(event_id_s)
             day = _active_day(chat_id)
             if event_id in _selected_ids(chat_id, day):
+                match = _find_match(chat_id, event_id, day)
+                if match and ss.is_finished(match):
+                    tg_send_message(
+                        chat_id,
+                        "Матч уже выбран и завершен. Выслать повторно?",
+                        reply_markup=_resend_match_menu(event_id),
+                    )
+                    tg_answer_callback_query(cq_id)
+                    return
                 remove_match_watch(chat_id, day, event_id)
                 _refresh_matches_message(chat_id, message_id)
                 tg_answer_callback_query(cq_id, "Матч убран")
@@ -601,6 +645,25 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
             tg_answer_callback_query(cq_id, notice)
             return
 
+        if data.startswith("watch_resend|"):
+            _, event_id_s = data.split("|", 1)
+            event_id = int(event_id_s)
+            day = _active_day(chat_id)
+            match = _find_match(chat_id, event_id, day)
+            if not match:
+                tg_answer_callback_query(cq_id, "Матч не найден в выбранном расписании", show_alert=True)
+                return
+            if not ss.is_finished(match):
+                tg_answer_callback_query(cq_id, "Матч еще не завершен", show_alert=True)
+                return
+            match = asyncio.run(ss.enrich_event(match))
+            if send_match_result(BOT_TOKEN, chat_id, match):
+                mark_match_notified(chat_id, day, event_id)
+                tg_answer_callback_query(cq_id, "Отправил повторно")
+            else:
+                tg_answer_callback_query(cq_id, "Не смог отправить", show_alert=True)
+            return
+
         if data.startswith("watch_del|"):
             _, event_id_s = data.split("|", 1)
             day = _active_day(chat_id)
@@ -617,6 +680,7 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        tg_set_my_commands()
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.end_headers()
