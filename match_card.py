@@ -8,11 +8,11 @@ from io import BytesIO
 from typing import Any, Dict
 
 
-W, H = 1024, 1280
-LEFT_W, BOTTOM_Y = 62, 1018
+W, H = 1080, 1350
+LEFT_W, BOTTOM_Y = 65, 1074
 PANEL = (21, 20, 25, 255)
 WHITE = (246, 246, 246, 255)
-GREEN = (216, 255, 48, 255)
+GREEN = (226, 252, 60, 255)
 LINE = (232, 232, 232, 235)
 
 FONT_URL = {
@@ -20,6 +20,11 @@ FONT_URL = {
     "italic": "https://raw.githubusercontent.com/google/fonts/main/ofl/sofiasans/SofiaSans-Italic%5Bwght%5D.ttf",
 }
 ROOT_DIR = os.path.dirname(__file__)
+TEMPLATE_DIR = os.path.join(ROOT_DIR, "assets", "card_templates")
+CARD_TEMPLATES = {
+    3: os.path.join(TEMPLATE_DIR, "result_2_sets.png"),
+    4: os.path.join(TEMPLATE_DIR, "result_3_sets.png"),
+}
 FONT_FILES = {
     "extra_italic": os.path.join(ROOT_DIR, "fonts", "SofiaSans-ExtraBoldItalic.ttf"),
 }
@@ -283,18 +288,50 @@ def _tour_line(event: Dict[str, Any]) -> str:
     return " ".join(x for x in (category, tournament, _stage(event)) if x).strip()
 
 
-def _left_bar(img: Any, text: str) -> None:
+def _score_columns(count: int) -> list[int]:
+    return [800, 910, 1030] if count <= 3 else [710, 817, 924, 1030]
+
+
+def _fallback_template(count: int):
     from PIL import Image, ImageDraw
 
-    bar = Image.new("RGBA", (LEFT_W, H), (0, 0, 0, 0))
-    px = bar.load()
+    img = Image.new("RGBA", (W, H), (55, 28, 134, 255))
+    px = img.load()
     for y in range(H):
         t = y / (H - 1)
-        top, mid, bot = (60, 26, 128), (84, 48, 155), (218, 255, 48)
-        a, b, k = (top, mid, t / 0.56) if t < 0.56 else (mid, bot, (t - 0.56) / 0.44)
-        for x in range(LEFT_W):
+        for x in range(W):
+            wave = (x * 0.65 - y * 0.42) / W
+            yellow = max(0.0, 1.0 - abs(wave + 0.25) * 3.2)
             grain = ((x * 17 + y * 23) % 37) - 18
-            px[x, y] = tuple(max(0, min(255, int(a[i] + (b[i] - a[i]) * k + grain * 0.6))) for i in range(3)) + (255,)
+            base = (55 + int(30 * t), 28 + int(24 * t), 134 + int(24 * (1 - t)))
+            color = tuple(max(0, min(255, int(base[i] + (GREEN[i] - base[i]) * yellow + grain * 0.45))) for i in range(3))
+            px[x, y] = color + (255,)
+
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((LEFT_W, BOTTOM_Y, W, H), fill=PANEL)
+    draw.line((125, 1218, 1050, 1218), fill=LINE, width=2)
+    for x in ((848, 956) if count <= 3 else (748, 855, 962)):
+        draw.line((x, 1129, x, 1305), fill=LINE, width=2)
+    return img
+
+
+def _base_template(count: int):
+    from PIL import Image
+
+    path = CARD_TEMPLATES[3 if count <= 3 else 4]
+    if os.path.exists(path):
+        try:
+            img = Image.open(path).convert("RGBA")
+            if img.size != (W, H):
+                img = img.resize((W, H))
+            return img
+        except Exception:
+            pass
+    return _fallback_template(count)
+
+
+def _left_bar(img: Any, text: str) -> None:
+    from PIL import Image, ImageDraw
 
     font = _font("medium", 28)
     probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
@@ -303,35 +340,35 @@ def _left_bar(img: Any, text: str) -> None:
     tmp = Image.new("RGBA", (tw + 8, th + 8), (0, 0, 0, 0))
     d = ImageDraw.Draw(tmp)
     d.text((4 - bbox[0], 4 - bbox[1]), text, font=font, fill=WHITE)
-    rotated = tmp.rotate(90, expand=True)
-    x = max(0, LEFT_W - rotated.width - 6)
-    bar.alpha_composite(rotated, (x, 24))
-    img.alpha_composite(bar, (0, 0))
+    rotated = tmp.rotate(270, expand=True)
+    x = max(0, LEFT_W - rotated.width - 7)
+    img.alpha_composite(rotated, (x, 24))
 
 
 def build_match_card_png(event: Dict[str, Any]) -> bytes:
-    from PIL import Image, ImageDraw
+    from PIL import ImageDraw
 
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    home_scores, away_scores = _scores(event)
+    col_count = min(4, max(3, len(home_scores), len(away_scores)))
+    home_scores = (home_scores + [""] * col_count)[:col_count]
+    away_scores = (away_scores + [""] * col_count)[:col_count]
+
+    img = _base_template(col_count)
     draw = ImageDraw.Draw(img)
     _left_bar(img, _tour_line(event))
-    draw.rectangle((LEFT_W, BOTTOM_Y, W, H), fill=PANEL)
 
-    name_x, y1, y2 = 118, 1064, 1167
-    score_y1, score_y2 = 1060, 1163
-    cols = [668, 770, 872, 975]
-    draw.line((name_x, 1156, 995, 1156), fill=LINE, width=2)
-    for x in (704, 805, 907):
-        draw.line((x, 1068, x, 1240), fill=LINE, width=2)
+    name_x, y1, y2 = 122, 1118, 1228
+    score_y1, score_y2 = 1114, 1224
+    cols = _score_columns(col_count)
 
     home_name = _surname(str(event.get("card_home_name") or event.get("home_name") or "TBD"))
     away_name = _surname(str(event.get("card_away_name") or event.get("away_name") or "TBD"))
     winner = _winner(event)
-    draw.text((name_x, y1), home_name, font=_fit(draw, home_name, 72, 445), fill=GREEN if winner == "home" else WHITE)
-    draw.text((name_x, y2), away_name, font=_fit(draw, away_name, 72, 445), fill=GREEN if winner == "away" else WHITE)
+    name_width = max(360, cols[0] - name_x - 55)
+    draw.text((name_x, y1), home_name, font=_fit(draw, home_name, 76, name_width), fill=GREEN if winner == "home" else WHITE)
+    draw.text((name_x, y2), away_name, font=_fit(draw, away_name, 76, name_width), fill=GREEN if winner == "away" else WHITE)
 
-    home_scores, away_scores = _scores(event)
-    score_font = _font("extra_italic", 72)
+    score_font = _font("extra_italic", 76)
     for idx, value in enumerate(home_scores):
         _right(draw, cols[idx], score_y1, value, score_font, GREEN if idx == 0 and winner == "home" else WHITE)
     for idx, value in enumerate(away_scores):
