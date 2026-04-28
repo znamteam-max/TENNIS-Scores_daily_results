@@ -3,6 +3,7 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
+import sitecustomize as _match_card_startup_patch  # noqa: F401
 from match_card import build_match_card_png
 
 
