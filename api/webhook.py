@@ -34,6 +34,12 @@ from telegram_media import send_match_result
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 DEFAULT_TZ = os.getenv("APP_TZ", "Europe/Helsinki")
+PUBLISH_CHAT_ID = (
+    os.getenv("PUBLISH_CHAT_ID")
+    or os.getenv("RESULTS_CHAT_ID")
+    or os.getenv("TELEGRAM_PUBLISH_CHAT_ID")
+    or ""
+).strip()
 BOT_COMMANDS = [
     {"command": "start", "description": "открыть главное меню"},
     {"command": "today", "description": "выбрать матчи на сегодня"},
@@ -44,6 +50,20 @@ BOT_COMMANDS = [
 
 def _tg_api(method: str) -> str:
     return f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+
+
+def _publish_chat_id(chat_id: int) -> int | str:
+    return PUBLISH_CHAT_ID or chat_id
+
+
+def _send_result(chat_id: int, event: Dict[str, Any]) -> bool:
+    return send_match_result(
+        BOT_TOKEN,
+        _publish_chat_id(chat_id),
+        event,
+        review_chat_id=chat_id,
+        allow_text_fallback=False,
+    )
 
 
 def _post_json(url: str, payload: Dict[str, Any]) -> None:
@@ -324,7 +344,7 @@ def _handle_card_edit_text(chat_id: int, text: str, payload: Dict[str, Any]) -> 
     update_result_card(chat_id, card_id, event)
     clear_state(chat_id)
     tg_send_message(chat_id, "Исправление принято, отправляю новую версию плашки.")
-    send_match_result(BOT_TOKEN, chat_id, event)
+    _send_result(chat_id, event)
 
 
 def _message_photo_file_id(msg: Dict[str, Any]) -> str:
@@ -353,7 +373,7 @@ def _handle_card_photo_upload(chat_id: int, msg: Dict[str, Any], payload: Dict[s
     update_result_card(chat_id, card_id, event)
     clear_state(chat_id)
     tg_send_message(chat_id, "Фото принято, отправляю новую версию плашки.")
-    send_match_result(BOT_TOKEN, chat_id, event)
+    _send_result(chat_id, event)
     return True
 
 
@@ -680,9 +700,11 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
             add_match_watch(chat_id, day, match)
             if ss.is_finished(match):
                 match = asyncio.run(ss.enrich_event(match))
-                send_match_result(BOT_TOKEN, chat_id, match)
-                mark_match_notified(chat_id, day, event_id)
-                notice = "Матч уже завершен, результат отправлен отдельным сообщением"
+                if _send_result(chat_id, match):
+                    mark_match_notified(chat_id, day, event_id)
+                    notice = "Матч уже завершен, результат отправлен отдельным сообщением"
+                else:
+                    notice = "Матч уже завершен, но плашку не удалось отправить"
             else:
                 notice = "Матч добавлен. Результат придет отдельным сообщением после окончания."
             _refresh_matches_message(chat_id, message_id)
@@ -701,7 +723,7 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
                 tg_answer_callback_query(cq_id, "Матч еще не завершен", show_alert=True)
                 return
             match = asyncio.run(ss.enrich_event(match))
-            if send_match_result(BOT_TOKEN, chat_id, match):
+            if _send_result(chat_id, match):
                 mark_match_notified(chat_id, day, event_id)
                 tg_answer_callback_query(cq_id, "Отправил повторно")
             else:

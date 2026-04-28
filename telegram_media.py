@@ -9,7 +9,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from match_card import build_match_card_png
 from providers import sofascore as ss
@@ -312,7 +312,10 @@ def _review_markup(card_id: str) -> Dict[str, Any]:
     }
 
 
-def _send_review_menu(bot_token: str, chat_id: int, card_id: str) -> None:
+ChatId = Union[int, str]
+
+
+def _send_review_menu(bot_token: str, chat_id: ChatId, card_id: str) -> None:
     _post_json(
         _api_url(bot_token, "sendMessage"),
         {
@@ -323,11 +326,18 @@ def _send_review_menu(bot_token: str, chat_id: int, card_id: str) -> None:
     )
 
 
-def send_match_result(bot_token: str, chat_id: int, event: Dict[str, Any]) -> bool:
+def send_match_result(
+    bot_token: str,
+    chat_id: ChatId,
+    event: Dict[str, Any],
+    review_chat_id: Optional[ChatId] = None,
+    allow_text_fallback: bool = False,
+) -> bool:
     if not bot_token:
         return False
 
     card_id = uuid.uuid4().hex[:12]
+    review_chat_id = review_chat_id if review_chat_id is not None else chat_id
     event = _card_event(event)
     text = ss.result_message(event)
     try:
@@ -348,16 +358,18 @@ def send_match_result(bot_token: str, chat_id: int, event: Dict[str, Any]) -> bo
         if document and document.get("ok", True):
             if save_result_card:
                 try:
-                    save_result_card(card_id, chat_id, event)
+                    save_result_card(card_id, int(review_chat_id), event)
                 except Exception as exc:
                     print(f"[card] save failed: {exc}")
             if caption is None:
                 _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
-            _send_review_menu(bot_token, chat_id, card_id)
+            _send_review_menu(bot_token, review_chat_id, card_id)
             return True
         if document:
             print(f"[card] sendDocument failed response={document}")
     except Exception as exc:
         print(f"[card] render/send failed: {exc}")
 
+    if not allow_text_fallback:
+        return False
     return bool(_post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text}))

@@ -20,6 +20,16 @@ from telegram_media import send_match_result
 
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+PUBLISH_CHAT_ID = (
+    os.getenv("PUBLISH_CHAT_ID")
+    or os.getenv("RESULTS_CHAT_ID")
+    or os.getenv("TELEGRAM_PUBLISH_CHAT_ID")
+    or ""
+).strip()
+
+
+def _publish_chat_id(chat_id: int) -> int | str:
+    return PUBLISH_CHAT_ID or chat_id
 
 
 def _tz() -> ZoneInfo:
@@ -66,6 +76,8 @@ async def run_once() -> None:
 
     if not BOT_TOKEN:
         print("[WARN] TELEGRAM_BOT_TOKEN is not set; result notifications skipped")
+    if PUBLISH_CHAT_ID:
+        print(f"[OK] publishing result cards to chat_id={PUBLISH_CHAT_ID}")
 
     sent = 0
     for day in sorted(days):
@@ -80,8 +92,15 @@ async def run_once() -> None:
                 continue
 
             event = await ss.enrich_event(event)
-            if send_match_result(BOT_TOKEN, int(watch["chat_id"]), event):
-                if mark_match_notified(int(watch["chat_id"]), day, int(watch["event_id"])):
+            source_chat_id = int(watch["chat_id"])
+            if send_match_result(
+                BOT_TOKEN,
+                _publish_chat_id(source_chat_id),
+                event,
+                review_chat_id=source_chat_id,
+                allow_text_fallback=False,
+            ):
+                if mark_match_notified(source_chat_id, day, int(watch["event_id"])):
                     sent += 1
 
     print(f"[OK] result notifications sent={sent}")
