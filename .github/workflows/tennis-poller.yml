@@ -3,7 +3,7 @@ name: TENNIS poller (cache Flashscore)
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: read
@@ -29,6 +29,7 @@ jobs:
         env:
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PUBLISH_CHAT_ID: ${{ secrets.PUBLISH_CHAT_ID }}
           APP_TZ: Europe/Helsinki
         run: |
           python gha_worker.py
