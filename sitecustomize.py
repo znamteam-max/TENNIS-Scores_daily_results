@@ -12,7 +12,7 @@ def _patch_match_card() -> None:
     def _left_bar(img: Any, text: str) -> None:
         from PIL import Image, ImageDraw
 
-        text = str(text or "").expandtabs(4).upper()
+        text = str(text or "").replace("\t", "    ").upper()
         font = match_card._font("medium", 28)
         probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
         bbox = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
