@@ -12,7 +12,7 @@ def _patch_match_card() -> None:
     def _left_bar(img: Any, text: str) -> None:
         from PIL import Image, ImageDraw
 
-        text = str(text or "").upper()
+        text = str(text or "").expandtabs(4).upper()
         font = match_card._font("medium", 28)
         probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
         bbox = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
@@ -21,7 +21,7 @@ def _patch_match_card() -> None:
         d = ImageDraw.Draw(tmp)
         d.text((4 - bbox[0], 4 - bbox[1]), text, font=font, fill=match_card.WHITE)
         rotated = tmp.rotate(90, expand=True)
-        x = max(0, match_card.LEFT_W - rotated.width - 7)
+        x = max(0, match_card.LEFT_W - rotated.width - 12)
         img.alpha_composite(rotated, (x, 24))
 
     def _fallback_template(count: int) -> Any:

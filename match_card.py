@@ -287,11 +287,13 @@ def _tour_line(event: Dict[str, Any]) -> str:
         tournament = tournament.split("(", 1)[0].strip()
     if "," in tournament:
         tournament = tournament.split(",", 1)[0].strip()
-    return " ".join(x for x in (category, tournament, _stage(event)) if x).strip()
+    title = " ".join(x for x in (category, tournament) if x).strip()
+    stage = _stage(event)
+    return f"{title}\t{stage}".strip() if stage else title
 
 
 def _score_columns(count: int) -> list[int]:
-    return [800, 910, 1030] if count <= 3 else [710, 817, 924, 1030]
+    return [816, 923, 1030] if count <= 3 else [709, 816, 923, 1030]
 
 
 def _fallback_template(count: int):
@@ -388,7 +390,7 @@ def _overlay_photo(img: Any, event: Dict[str, Any]) -> None:
 def _left_bar(img: Any, text: str) -> None:
     from PIL import Image, ImageDraw
 
-    text = str(text or "").upper()
+    text = str(text or "").expandtabs(4).upper()
     font = _font("medium", 28)
     probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
     bbox = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
@@ -397,7 +399,7 @@ def _left_bar(img: Any, text: str) -> None:
     d = ImageDraw.Draw(tmp)
     d.text((4 - bbox[0], 4 - bbox[1]), text, font=font, fill=WHITE)
     rotated = tmp.rotate(90, expand=True)
-    x = max(0, LEFT_W - rotated.width - 7)
+    x = max(0, LEFT_W - rotated.width - 12)
     img.alpha_composite(rotated, (x, 24))
 
 
