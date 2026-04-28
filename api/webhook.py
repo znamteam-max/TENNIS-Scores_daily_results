@@ -163,6 +163,7 @@ def _card_fix_menu(card_id: str) -> Dict[str, Any]:
             [_btn("боковая плашка", f"card_edit|{card_id}|side")],
             [_btn("фамилии", f"card_edit|{card_id}|names")],
             [_btn("счёт", f"card_edit|{card_id}|score")],
+            [_btn("фото", f"card_edit|{card_id}|photo")],
             [_btn("назад", f"card_back|{card_id}")],
         ]
     )
@@ -184,6 +185,8 @@ def _card_edit_prompt(field: str) -> str:
         return "Пришли новый текст боковой плашки одним сообщением.\nПример: WTA 1000 МАДРИД   1/8 ФИНАЛА"
     if field == "names":
         return "Пришли фамилии в правильном порядке: двумя строками или через /.\nПример: Соболенко / Осака"
+    if field == "photo":
+        return "Пришли фото картинкой, файлом или прямой ссылкой на изображение. Чтобы убрать фото, напиши: убрать"
     return "Пришли счёт. Можно так: 2 6 6 6 / 1 7 3 2\nИли так: 2-1 (6-7, 6-3, 6-2)"
 
 
@@ -302,6 +305,17 @@ def _handle_card_edit_text(chat_id: int, text: str, payload: Dict[str, Any]) -> 
             tg_send_message(chat_id, "Не понял счёт. Пример: 2 6 6 6 / 1 7 3 2 или 2-1 (6-7, 6-3, 6-2)")
             return
         _apply_score(event, scores[0], scores[1])
+    elif field == "photo":
+        low = value.lower()
+        if low in {"убрать", "remove", "delete", "без фото"}:
+            event.pop("card_photo_url", None)
+            event.pop("card_photo_file_id", None)
+        elif value.startswith(("http://", "https://")):
+            event["card_photo_url"] = value
+            event.pop("card_photo_file_id", None)
+        else:
+            tg_send_message(chat_id, "Пришли фото картинкой, файлом или прямой ссылкой на изображение.")
+            return
     else:
         clear_state(chat_id)
         tg_send_message(chat_id, "Не понял, что исправлять. Нажми «исправить» под плашкой еще раз.")
@@ -311,6 +325,36 @@ def _handle_card_edit_text(chat_id: int, text: str, payload: Dict[str, Any]) -> 
     clear_state(chat_id)
     tg_send_message(chat_id, "Исправление принято, отправляю новую версию плашки.")
     send_match_result(BOT_TOKEN, chat_id, event)
+
+
+def _message_photo_file_id(msg: Dict[str, Any]) -> str:
+    photos = msg.get("photo") or []
+    if photos:
+        return str(photos[-1].get("file_id") or "")
+    doc = msg.get("document") or {}
+    mime = str(doc.get("mime_type") or "")
+    if mime.startswith("image/"):
+        return str(doc.get("file_id") or "")
+    return ""
+
+
+def _handle_card_photo_upload(chat_id: int, msg: Dict[str, Any], payload: Dict[str, Any]) -> bool:
+    file_id = _message_photo_file_id(msg)
+    if not file_id:
+        return False
+    card_id = str(payload.get("card_id") or "")
+    event = get_result_card(chat_id, card_id)
+    if not event:
+        clear_state(chat_id)
+        tg_send_message(chat_id, "Не нашел эту плашку для исправления. Отправь /today и выбери матч заново.")
+        return True
+    event["card_photo_file_id"] = file_id
+    event.pop("card_photo_url", None)
+    update_result_card(chat_id, card_id, event)
+    clear_state(chat_id)
+    tg_send_message(chat_id, "Фото принято, отправляю новую версию плашки.")
+    send_match_result(BOT_TOKEN, chat_id, event)
+    return True
 
 
 def _load_events_for_chat(chat_id: int, day: Optional[dt.date] = None) -> List[Dict[str, Any]]:
@@ -704,7 +748,11 @@ class handler(BaseHTTPRequestHandler):
             if "message" in upd:
                 msg = upd["message"] or {}
                 chat_id = int((msg.get("chat") or {})["id"])
-                _handle_text(chat_id, msg.get("text") or "")
+                state, payload = get_state(chat_id)
+                if state == "editing_card" and str(payload.get("field") or "") == "photo" and _handle_card_photo_upload(chat_id, msg, payload):
+                    pass
+                else:
+                    _handle_text(chat_id, msg.get("text") or msg.get("caption") or "")
             elif "callback_query" in upd:
                 cq = upd["callback_query"] or {}
                 msg = cq.get("message") or {}

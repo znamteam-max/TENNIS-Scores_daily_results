@@ -4,6 +4,7 @@ import os
 import re
 import html
 import base64
+import json
 import urllib.request
 from io import BytesIO
 from typing import Any, Dict
@@ -339,6 +340,51 @@ def _base_template(count: int):
     return _fallback_template(count)
 
 
+def _telegram_file_url(file_id: str) -> str:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token or not file_id:
+        return ""
+    try:
+        payload = json.dumps({"file_id": file_id}).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/getFile",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        path = ((data or {}).get("result") or {}).get("file_path")
+        if path:
+            return f"https://api.telegram.org/file/bot{token}/{path}"
+    except Exception:
+        return ""
+    return ""
+
+
+def _photo_source(event: Dict[str, Any]) -> str:
+    url = str(event.get("card_photo_url") or "").strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    file_id = str(event.get("card_photo_file_id") or "").strip()
+    return _telegram_file_url(file_id)
+
+
+def _overlay_photo(img: Any, event: Dict[str, Any]) -> None:
+    from PIL import Image, ImageOps
+
+    url = _photo_source(event)
+    if not url:
+        return
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            photo = Image.open(BytesIO(resp.read())).convert("RGBA")
+        photo = ImageOps.fit(photo, (959, 1017), method=Image.Resampling.LANCZOS, centering=(0.5, 0.0))
+        img.alpha_composite(photo, (W - 959, 0))
+    except Exception as exc:
+        print(f"[card] photo overlay failed: {exc}")
+
+
 def _left_bar(img: Any, text: str) -> None:
     from PIL import Image, ImageDraw
 
@@ -364,6 +410,7 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
     away_scores = (away_scores + [""] * col_count)[:col_count]
 
     img = _base_template(col_count)
+    _overlay_photo(img, event)
     draw = ImageDraw.Draw(img)
     _left_bar(img, _tour_line(event))
 
