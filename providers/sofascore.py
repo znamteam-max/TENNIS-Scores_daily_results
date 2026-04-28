@@ -17,6 +17,124 @@ FLASHSCORE_LANG = os.getenv("FLASHSCORE_LANG", "ru").strip() or "ru"
 FLASHSCORE_HOME = f"{FLASHSCORE_BASE}/tennis/"
 FLASHSCORE_FSIGN = "SW9D1eZo"
 
+GRAND_SLAM_TOURNAMENTS = (
+    "australian open",
+    "open australia",
+    "открытый чемпионат австралии",
+    "австралия open",
+    "roland garros",
+    "french open",
+    "ролан гаррос",
+    "wimbledon",
+    "уимблдон",
+    "us open",
+    "открытый чемпионат сша",
+)
+
+COMMON_1000_TOURNAMENTS = (
+    "indian wells",
+    "индиан-уэллс",
+    "индиан уэллс",
+    "miami",
+    "майами",
+    "madrid",
+    "мадрид",
+    "rome",
+    "рим",
+    "canada",
+    "canadian open",
+    "toronto",
+    "торонто",
+    "montreal",
+    "монреаль",
+    "cincinnati",
+    "цинциннати",
+)
+
+ATP_1000_TOURNAMENTS = (
+    "monte carlo",
+    "монте-карло",
+    "монте карло",
+    "shanghai",
+    "шанхай",
+    "paris",
+    "париж",
+)
+
+WTA_1000_TOURNAMENTS = (
+    "doha",
+    "доха",
+    "dubai",
+    "дубай",
+    "beijing",
+    "пекин",
+    "wuhan",
+    "ухань",
+)
+
+ATP_500_TOURNAMENTS = (
+    "rotterdam",
+    "роттердам",
+    "doha",
+    "доха",
+    "dubai",
+    "дубай",
+    "rio de janeiro",
+    "рио-де-жанейро",
+    "acapulco",
+    "акапулько",
+    "barcelona",
+    "барселона",
+    "queens",
+    "queen's",
+    "лондон",
+    "halle",
+    "халле",
+    "washington",
+    "вашингтон",
+    "beijing",
+    "пекин",
+    "tokyo",
+    "токио",
+    "basel",
+    "базель",
+    "vienna",
+    "вена",
+    "hamburg",
+    "гамбург",
+    "dallas",
+    "даллас",
+)
+
+WTA_500_TOURNAMENTS = (
+    "brisbane",
+    "брисбен",
+    "adelaide",
+    "аделаида",
+    "abu dhabi",
+    "абу-даби",
+    "linz",
+    "линц",
+    "stuttgart",
+    "штутгарт",
+    "charleston",
+    "чарльстон",
+    "strasbourg",
+    "страсбург",
+    "berlin",
+    "берлин",
+    "bad homburg",
+    "бад-хомбург",
+    "eastbourne",
+    "истборн",
+    "seoul",
+    "сеул",
+    "ningbo",
+    "нинбо",
+    "tokyo",
+    "токио",
+)
+
 UAS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
@@ -65,6 +183,44 @@ def _clean(value: Any) -> str:
 
 def _lower(*parts: Any) -> str:
     return " ".join(str(p or "").strip().lower() for p in parts if p is not None).strip()
+
+
+def _ranked_status(category: str, tournament: str, season: str) -> tuple[str, int]:
+    category = (category or "Other").strip()
+    hay = _lower(category, tournament, season).replace("ё", "е")
+    if category == "ITF" or "itf" in hay or any(x in hay for x in ("m15", "m25", "m35", "m50", "w15", "w25", "w35", "w50", "w75", "w100")):
+        marker = ""
+        for token in ("M15", "M25", "M35", "M50", "W15", "W25", "W35", "W50", "W75", "W100"):
+            if token.lower() in hay:
+                marker = f" {token}"
+                break
+        return f"ITF{marker}", 5
+    if category == "Challenger" or "challenger" in hay or "челленджер" in hay:
+        return "Challenger", 4
+    if any(x in hay for x in GRAND_SLAM_TOURNAMENTS):
+        return "Grand Slam", 0
+    if category in {"ATP", "WTA"} and "1000" in hay:
+        return f"{category} 1000", 1
+    if category in {"ATP", "WTA"} and "500" in hay:
+        return f"{category} 500", 2
+    if category in {"ATP", "WTA"} and "250" in hay:
+        return f"{category} 250", 3
+    if category == "ATP" and any(x in hay for x in COMMON_1000_TOURNAMENTS + ATP_1000_TOURNAMENTS):
+        return "ATP 1000", 1
+    if category == "WTA" and any(x in hay for x in COMMON_1000_TOURNAMENTS + WTA_1000_TOURNAMENTS):
+        return "WTA 1000", 1
+    if any(x in hay for x in COMMON_1000_TOURNAMENTS):
+        prefix = "WTA" if category == "WTA" else "ATP" if category == "ATP" else category
+        return f"{prefix} 1000".strip(), 1
+    if category == "ATP":
+        if any(x in hay for x in ATP_500_TOURNAMENTS):
+            return "ATP 500", 2
+        return "ATP 250", 3
+    if category == "WTA":
+        if any(x in hay for x in WTA_500_TOURNAMENTS):
+            return "WTA 500", 2
+        return "WTA 250", 3
+    return category or "Other", 6
 
 
 def _stable_id(source: str, raw_id: Any) -> int:
@@ -308,12 +464,18 @@ def _side_name(ev: Dict[str, Any], side: str) -> str:
 
 def normalize_event(ev: Dict[str, Any]) -> Dict[str, Any]:
     group = tour_group(ev)
+    category = classify(ev)
+    tournament = _tournament_name(ev)
+    season = _season_name(ev)
+    tournament_status, tournament_rank = _ranked_status(category, tournament, season)
     return {
         "event_id": int(ev.get("id")),
         "custom_id": ev.get("customId"),
-        "tournament_name": _tournament_name(ev),
-        "season_name": _season_name(ev),
-        "category": classify(ev),
+        "tournament_name": tournament,
+        "season_name": season,
+        "category": category,
+        "tournament_status": tournament_status,
+        "tournament_sort_rank": tournament_rank,
         "tour_group": group,
         "tour_label": tour_label(group),
         "home_name": _side_name(ev, "home"),
@@ -353,18 +515,24 @@ def tournaments_for_tour_group(events: List[Dict[str, Any]], group: str) -> List
                 "tournament_name": key,
                 "tour_group": event["tour_group"],
                 "tour_label": event["tour_label"],
+                "tournament_status": event.get("tournament_status") or event.get("category") or "Other",
+                "tournament_sort_rank": int(event.get("tournament_sort_rank", 6)),
                 "matches_count": 0,
                 "live_count": 0,
                 "finished_count": 0,
             },
         )
+        rank = int(event.get("tournament_sort_rank", 6))
+        if rank < int(row.get("tournament_sort_rank", 6)):
+            row["tournament_sort_rank"] = rank
+            row["tournament_status"] = event.get("tournament_status") or row.get("tournament_status") or "Other"
         row["matches_count"] += 1
         status = status_type(event)
         if status == "inprogress":
             row["live_count"] += 1
         if status in {"finished", "retired", "cancelled", "walkover"}:
             row["finished_count"] += 1
-    return sorted(bucket.values(), key=lambda x: (x["tournament_name"].lower(), x["matches_count"]))
+    return sorted(bucket.values(), key=lambda x: (int(x.get("tournament_sort_rank", 6)), x["tournament_name"].lower(), -int(x["matches_count"])))
 
 
 def tournaments_for_category(events: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
