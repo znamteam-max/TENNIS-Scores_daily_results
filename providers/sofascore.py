@@ -649,7 +649,7 @@ def _parse_stats(text: Optional[str]) -> Dict[str, Dict[str, str]]:
         fields = _fields(record)
         if fields.get("SE"):
             scope = fields["SE"]
-        if scope == "Match" and fields.get("SG"):
+        if scope.lower() in {"match", "матч"} and fields.get("SG"):
             stats[fields["SG"]] = {"home": fields.get("SH") or "", "away": fields.get("SI") or ""}
     return stats
 
@@ -684,8 +684,22 @@ async def enrich_event(event: Dict[str, Any]) -> Dict[str, Any]:
     return event
 
 
-def _stat_pair(stats: Dict[str, Dict[str, str]], name: str) -> Optional[str]:
-    row = stats.get(name) or {}
+def _norm_stat_name(value: str) -> str:
+    return " ".join(str(value or "").lower().replace("ё", "е").split())
+
+
+def _stat_pair(stats: Dict[str, Dict[str, str]], *names: str) -> Optional[str]:
+    row: Dict[str, str] = {}
+    for name in names:
+        row = stats.get(name) or {}
+        if row:
+            break
+    if not row:
+        wanted = {_norm_stat_name(name) for name in names}
+        for key, value in stats.items():
+            if _norm_stat_name(key) in wanted:
+                row = value
+                break
     home, away = row.get("home"), row.get("away")
     if not home and not away:
         return None
@@ -702,13 +716,15 @@ def _stats_lines(event: Dict[str, Any]) -> List[str]:
     if duration:
         lines.append(f"Длительность: {duration}")
     pairs = [
-        (("Aces", "Подачи навылет"), "эйсы"),
+        (("Aces", "Подачи навылет", "Эйсы"), "эйсы"),
         (("Double Faults", "Двойные ошибки"), "двойные"),
-        (("Winners", "Активно выигр. мячи"), "виннерсы"),
+        (("1st Serve Percentage", "1st serve percentage", "1-я подача", "Процент первой подачи"), "первая подача"),
+        (("1st serve points won", "Очки выигр. на п.п.", "Выиграно очков на 1-й подаче"), "очки на первой подаче"),
+        (("2nd serve points won", "Очки выигр. на в.п.", "Выиграно очков на 2-й подаче"), "очки на второй подаче"),
+        (("Break Points Converted", "Реализованные брейкпойнты", "Брейк-пойнты"), "брейк-пойнты"),
+        (("Winners", "Активно выигр. мячи", "Виннерсы"), "виннерсы"),
         (("Unforced errors", "Невынужд. ошибки"), "невынужденные"),
-        (("1st serve points won", "Очки выигр. на п.п."), "очки на первой подаче"),
-        (("Break Points Converted", "Реализованные брейкпойнты"), "брейк-пойнты"),
-        (("Total Points Won", "Всего выигранных очков"), "всего очков"),
+        (("Total Points Won", "Всего выигранных очков", "Выиграно очков"), "всего очков"),
     ]
     for keys, label in pairs:
         value = None
@@ -718,7 +734,14 @@ def _stats_lines(event: Dict[str, Any]) -> List[str]:
                 break
         if value:
             lines.append(f"{label}: {value}")
-    return lines[:7]
+    return lines[:9]
+
+
+def stats_message(event: Dict[str, Any]) -> str:
+    stats = _stats_lines(event)
+    if not stats:
+        return ""
+    return "\n".join(["Основная статистика:", *stats]).strip()
 
 
 def winner_name(event: Dict[str, Any]) -> str:
@@ -730,7 +753,7 @@ def winner_name(event: Dict[str, Any]) -> str:
     return ""
 
 
-def result_message(event: Dict[str, Any]) -> str:
+def result_message(event: Dict[str, Any], include_stats: bool = True) -> str:
     lines = [
         status_label(event),
         f"{event.get('tour_label') or tour_label(event.get('tour_group', ''))}: {event.get('tournament_name') or 'Турнир'}",
@@ -746,7 +769,7 @@ def result_message(event: Dict[str, Any]) -> str:
     winner = winner_name(event)
     if winner:
         lines.append(f"Победитель: {winner}")
-    stats = _stats_lines(event)
+    stats = _stats_lines(event) if include_stats else []
     if stats:
         lines.append("")
         lines.append("Краткая статистика:")

@@ -339,7 +339,8 @@ def send_match_result(
     card_id = uuid.uuid4().hex[:12]
     review_chat_id = review_chat_id if review_chat_id is not None else chat_id
     event = _card_event(event)
-    text = ss.result_message(event)
+    text = ss.result_message(event, include_stats=False)
+    stats_text = ss.stats_message(event)
     try:
         t0 = time.monotonic()
         png = build_match_card_png(event)
@@ -363,6 +364,8 @@ def send_match_result(
                     print(f"[card] save failed: {exc}")
             if caption is None:
                 _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
+            if stats_text:
+                _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": stats_text})
             _send_review_menu(bot_token, review_chat_id, card_id)
             return True
         if document:
