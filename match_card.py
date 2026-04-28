@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 import html
-import base64
 import json
 import urllib.request
 from io import BytesIO
@@ -296,50 +295,21 @@ def _score_columns(count: int) -> list[int]:
     return [816, 923, 1030] if count <= 3 else [709, 824, 927, 1030]
 
 
-def _fallback_template(count: int):
-    from PIL import Image, ImageDraw
-
-    img = Image.new("RGBA", (W, H), (55, 28, 134, 255))
-    px = img.load()
-    for y in range(H):
-        t = y / (H - 1)
-        for x in range(W):
-            wave = (x * 0.65 - y * 0.42) / W
-            yellow = max(0.0, 1.0 - abs(wave + 0.25) * 3.2)
-            grain = ((x * 17 + y * 23) % 37) - 18
-            base = (55 + int(30 * t), 28 + int(24 * t), 134 + int(24 * (1 - t)))
-            color = tuple(max(0, min(255, int(base[i] + (GREEN[i] - base[i]) * yellow + grain * 0.45))) for i in range(3))
-            px[x, y] = color + (255,)
-
-    draw = ImageDraw.Draw(img)
-    draw.rectangle((LEFT_W, BOTTOM_Y, W, H), fill=PANEL)
-    return img
-
-
 def _base_template(count: int):
     from PIL import Image
 
     path = CARD_TEMPLATES[3 if count <= 3 else 4]
-    if os.path.exists(path):
-        try:
-            img = Image.open(path).convert("RGBA")
-            if img.size != (W, H):
-                img = img.resize((W, H))
-            return img
-        except Exception:
-            pass
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"card template not found: {path}")
 
-    packed_path = os.path.splitext(path)[0] + ".b64"
-    if os.path.exists(packed_path):
-        try:
-            with open(packed_path, "rb") as fh:
-                img = Image.open(BytesIO(base64.b64decode(fh.read()))).convert("RGBA")
-            if img.size != (W, H):
-                img = img.resize((W, H))
-            return img
-        except Exception:
-            pass
-    return _fallback_template(count)
+    img = Image.open(path)
+    if img.size != (W, H):
+        raise ValueError(f"card template has wrong size: {img.size}, expected {(W, H)}")
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    else:
+        img = img.copy()
+    return img
 
 
 def _telegram_file_url(file_id: str) -> str:
@@ -434,5 +404,5 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
         _right(draw, cols[idx], score_y2, value, score_font, GREEN if idx == 0 and winner == "away" else WHITE)
 
     out = BytesIO()
-    img.save(out, format="PNG", optimize=True)
+    img.save(out, format="PNG")
     return out.getvalue()
