@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
 
 from match_card import build_match_card_png
 
@@ -23,7 +24,13 @@ SAMPLE_EVENT = {
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
-            body = build_match_card_png(SAMPLE_EVENT)
+            event = dict(SAMPLE_EVENT)
+            event["raw"] = dict(SAMPLE_EVENT["raw"])
+            query = parse_qs(urlparse(self.path).query)
+            if query.get("sets", ["3"])[0] == "2":
+                event["raw"]["homeScore"] = {"current": 2, "period1": 6, "period2": 6}
+                event["raw"]["awayScore"] = {"current": 0, "period1": 4, "period2": 3}
+            body = build_match_card_png(event)
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
             self.send_header("Cache-Control", "no-store, max-age=0")
