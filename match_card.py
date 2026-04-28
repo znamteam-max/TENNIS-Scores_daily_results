@@ -17,20 +17,31 @@ FONT_URL = {
     "medium": "https://raw.githubusercontent.com/google/fonts/main/ofl/sofiasans/SofiaSans%5Bwght%5D.ttf",
     "italic": "https://raw.githubusercontent.com/google/fonts/main/ofl/sofiasans/SofiaSans-Italic%5Bwght%5D.ttf",
 }
+ROOT_DIR = os.path.dirname(__file__)
+FONT_FILES = {
+    "extra_italic": os.path.join(ROOT_DIR, "fonts", "SofiaSans-ExtraBoldItalic.ttf"),
+}
 
 
 def _font(kind: str, size: int):
     from PIL import ImageFont
 
+    bundled_path = FONT_FILES.get(kind)
+    if bundled_path and os.path.exists(bundled_path):
+        try:
+            return ImageFont.truetype(bundled_path, size)
+        except Exception:
+            pass
+
     name = "SofiaSans[wght].ttf" if kind == "medium" else "SofiaSans-Italic[wght].ttf"
     path = os.path.join("/tmp", name)
     if not os.path.exists(path):
-        urllib.request.urlretrieve(FONT_URL[kind], path)
+        urllib.request.urlretrieve(FONT_URL["medium" if kind == "medium" else "italic"], path)
     try:
         font = ImageFont.truetype(path, size)
         if hasattr(font, "set_variation_by_axes"):
             try:
-                font.set_variation_by_axes([500 if kind == "medium" else 600])
+                font.set_variation_by_axes([500 if kind == "medium" else 800])
             except Exception:
                 pass
         return font
@@ -44,10 +55,10 @@ def _size(draw: Any, text: str, font: Any) -> tuple[int, int]:
 
 
 def _fit(draw: Any, text: str, size: int, width: int):
-    font = _font("italic", size)
+    font = _font("extra_italic", size)
     while size > 26 and _size(draw, text, font)[0] > width:
         size -= 2
-        font = _font("italic", size)
+        font = _font("extra_italic", size)
     return font
 
 
@@ -229,8 +240,8 @@ def _left_bar(img: Any, text: str) -> None:
 
     tmp = Image.new("RGBA", (H, LEFT_W), (0, 0, 0, 0))
     d = ImageDraw.Draw(tmp)
-    d.text((58, 14), text, font=_font("medium", 28), fill=WHITE)
-    bar.alpha_composite(tmp.rotate(90, expand=True), (0, 0))
+    d.text((36, 10), text, font=_font("medium", 28), fill=WHITE)
+    bar.alpha_composite(tmp.rotate(270, expand=True), (0, 0))
     img.alpha_composite(bar, (0, 0))
 
 
@@ -256,7 +267,7 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
     draw.text((name_x, y2), away_name, font=_fit(draw, away_name, 72, 445), fill=GREEN if winner == "away" else WHITE)
 
     home_scores, away_scores = _scores(event)
-    score_font = _font("italic", 72)
+    score_font = _font("extra_italic", 72)
     for idx, value in enumerate(home_scores):
         _right(draw, cols[idx], score_y1, value, score_font, GREEN if idx == 0 and winner == "home" else WHITE)
     for idx, value in enumerate(away_scores):
