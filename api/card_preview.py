@@ -7,11 +7,13 @@ from match_card import build_match_card_png
 
 SAMPLE_EVENT = {
     "category": "WTA 1000",
+    "tournament_status": "WTA 1000",
     "tournament_name": "Мадрид",
     "home_name": "Соболенко А.",
     "away_name": "Осака Н.",
     "raw": {
         "winnerCode": 1,
+        "flashscore_round": "1/16",
         "homeScore": {"current": 2, "period1": 6, "period2": 6, "period3": 6},
         "awayScore": {"current": 1, "period1": 7, "period2": 3, "period3": 2},
     },
