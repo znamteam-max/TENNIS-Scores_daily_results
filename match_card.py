@@ -240,7 +240,7 @@ def _left_bar(img: Any, text: str) -> None:
 
     tmp = Image.new("RGBA", (H, LEFT_W), (0, 0, 0, 0))
     d = ImageDraw.Draw(tmp)
-    d.text((36, 10), text, font=_font("medium", 28), fill=WHITE)
+    d.text((24, 24), text, font=_font("medium", 28), fill=WHITE)
     bar.alpha_composite(tmp.rotate(270, expand=True), (0, 0))
     img.alpha_composite(bar, (0, 0))
 
