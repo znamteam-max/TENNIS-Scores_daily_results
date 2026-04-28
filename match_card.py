@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import html
 import urllib.request
 from io import BytesIO
 from typing import Any, Dict
@@ -21,6 +23,7 @@ ROOT_DIR = os.path.dirname(__file__)
 FONT_FILES = {
     "extra_italic": os.path.join(ROOT_DIR, "fonts", "SofiaSans-ExtraBoldItalic.ttf"),
 }
+FLASHSCORE_BASE = (os.getenv("FLASHSCORE_BASE") or "https://www.flashscorekz.com").rstrip("/")
 
 
 def _font(kind: str, size: int):
@@ -205,24 +208,79 @@ def _winner(event: Dict[str, Any]) -> str:
         return ""
 
 
+def _normalize_stage(value: Any) -> str:
+    text = " ".join(str(value or "").replace("-", " ").split())
+    if not text:
+        return ""
+
+    low = text.lower().replace("ё", "е")
+    m = re.fullmatch(r"1\s*/\s*(\d+)(?:\s+финала?)?", low)
+    if m:
+        return f"1/{m.group(1)} финала"
+
+    m = re.search(r"round\s+of\s+(\d+)|last\s+(\d+)", low)
+    if m:
+        size = int(m.group(1) or m.group(2))
+        if size > 1 and size % 2 == 0:
+            return f"1/{size // 2} финала"
+
+    if "quarter" in low or "четверть" in low:
+        return "1/4 финала"
+    if "semi" in low or "полуфин" in low:
+        return "1/2 финала"
+    if low in {"final", "финал"} or " финал" in low:
+        return "финал"
+    return text
+
+
+def _stage_from_flashscore_page(event: Dict[str, Any]) -> str:
+    raw = event.get("raw") or {}
+    match_id = raw.get("flashscore_id") or event.get("custom_id")
+    if not match_id:
+        return ""
+    url = f"{FLASHSCORE_BASE}/match/{match_id}/#/match-summary"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "text/html,*/*",
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.5,en;q=0.4",
+                "User-Agent": "Mozilla/5.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            page = resp.read().decode("utf-8", "replace")
+        match = re.search(r'<meta\s+property=["\']og:description["\']\s+content=["\']([^"\']+)["\']', page, flags=re.I)
+        if not match:
+            return ""
+        description = html.unescape(match.group(1))
+        if " - " not in description:
+            return ""
+        return _normalize_stage(description.rsplit(" - ", 1)[1])
+    except Exception:
+        return ""
+
+
 def _stage(event: Dict[str, Any]) -> str:
     raw = event.get("raw") or {}
-    for key in ("round", "stage", "flashscore_round"):
+    for key in ("card_stage", "flashscore_round", "round", "stage"):
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip().upper()
-    return "МАТЧ ЗАВЕРШЕН"
+            return _normalize_stage(value)
+    return _stage_from_flashscore_page(event)
 
 
 def _tour_line(event: Dict[str, Any]) -> str:
     custom = str(event.get("card_side_text") or "").strip()
     if custom:
-        return custom.upper()
+        return custom
     category = str(event.get("tournament_status") or event.get("category") or "").upper()
     tournament = str(event.get("tournament_name") or "ТУРНИР").upper()
     if "(" in tournament:
         tournament = tournament.split("(", 1)[0].strip()
-    return f"{category} {tournament}   {_stage(event)}".strip()
+    if "," in tournament:
+        tournament = tournament.split(",", 1)[0].strip()
+    return " ".join(x for x in (category, tournament, _stage(event)) if x).strip()
 
 
 def _left_bar(img: Any, text: str) -> None:
@@ -238,10 +296,16 @@ def _left_bar(img: Any, text: str) -> None:
             grain = ((x * 17 + y * 23) % 37) - 18
             px[x, y] = tuple(max(0, min(255, int(a[i] + (b[i] - a[i]) * k + grain * 0.6))) for i in range(3)) + (255,)
 
-    tmp = Image.new("RGBA", (H, LEFT_W), (0, 0, 0, 0))
+    font = _font("medium", 28)
+    probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+    bbox = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    tmp = Image.new("RGBA", (tw + 8, th + 8), (0, 0, 0, 0))
     d = ImageDraw.Draw(tmp)
-    d.text((20, 0), text, font=_font("medium", 28), fill=WHITE)
-    bar.alpha_composite(tmp.rotate(270, expand=True), (0, 0))
+    d.text((4 - bbox[0], 4 - bbox[1]), text, font=font, fill=WHITE)
+    rotated = tmp.rotate(90, expand=True)
+    x = max(0, LEFT_W - rotated.width - 6)
+    bar.alpha_composite(rotated, (x, 24))
     img.alpha_composite(bar, (0, 0))
 
 
