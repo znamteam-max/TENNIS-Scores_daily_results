@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 import unicodedata
 import uuid
 import urllib.error
@@ -89,8 +90,10 @@ def _post_multipart(
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(body))},
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return _decode_response(resp.read())
+        with urllib.request.urlopen(req, timeout=75) as resp:
+            data = _decode_response(resp.read())
+            print(f"[tg] media response ok={data.get('ok')} keys={list(data.keys())}")
+            return data
     except urllib.error.HTTPError as exc:
         body_text = ""
         try:
@@ -328,8 +331,11 @@ def send_match_result(bot_token: str, chat_id: int, event: Dict[str, Any]) -> bo
     event = _card_event(event)
     text = ss.result_message(event)
     try:
+        t0 = time.monotonic()
         png = build_match_card_png(event)
+        print(f"[card] png rendered bytes={len(png)} elapsed={time.monotonic() - t0:.2f}s event_id={event.get('event_id')}")
         caption: Optional[str] = text if len(text) <= 1000 else None
+        t1 = time.monotonic()
         document = _post_multipart(
             _api_url(bot_token, "sendDocument"),
             {"chat_id": chat_id, "caption": caption},
@@ -338,7 +344,8 @@ def send_match_result(bot_token: str, chat_id: int, event: Dict[str, Any]) -> bo
             "image/png",
             png,
         )
-        if document:
+        print(f"[card] sendDocument elapsed={time.monotonic() - t1:.2f}s ok={document.get('ok') if document else None}")
+        if document and document.get("ok", True):
             if save_result_card:
                 try:
                     save_result_card(card_id, chat_id, event)
@@ -348,6 +355,8 @@ def send_match_result(bot_token: str, chat_id: int, event: Dict[str, Any]) -> bo
                 _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
             _send_review_menu(bot_token, chat_id, card_id)
             return True
+        if document:
+            print(f"[card] sendDocument failed response={document}")
     except Exception as exc:
         print(f"[card] render/send failed: {exc}")
 
