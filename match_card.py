@@ -207,7 +207,7 @@ def _tour_line(event: Dict[str, Any]) -> str:
     custom = str(event.get("card_side_text") or "").strip()
     if custom:
         return custom.upper()
-    category = str(event.get("category") or "").upper()
+    category = str(event.get("tournament_status") or event.get("category") or "").upper()
     tournament = str(event.get("tournament_name") or "ТУРНИР").upper()
     if "(" in tournament:
         tournament = tournament.split("(", 1)[0].strip()
