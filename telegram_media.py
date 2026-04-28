@@ -14,10 +14,11 @@ from match_card import build_match_card_png
 from providers import sofascore as ss
 
 try:
-    from db_pg import ru_name_for, save_result_card
+    from db_pg import ru_name_for, save_result_card, set_alias
 except Exception:  # pragma: no cover - keeps local rendering usable without DB env
     ru_name_for = None
     save_result_card = None
+    set_alias = None
 
 
 def _api_url(bot_token: str, method: str) -> str:
@@ -117,7 +118,7 @@ def _slug(text: str) -> str:
 
 
 def _sports_ru_name(name: str) -> str:
-    parts = [p for p in re.split(r"\s+", _strip_accents(name).strip()) if p and not re.fullmatch(r"[A-Za-z]\.??", p)]
+    parts = [p for p in re.split(r"\s+", _strip_accents(name).strip()) if p and not re.fullmatch(r"[A-Za-z]\.?", p)]
     if not parts:
         return ""
     candidates = []
@@ -143,6 +144,43 @@ def _sports_ru_name(name: str) -> str:
                 return value
         except Exception:
             continue
+    return ""
+
+
+def _person_title(title: str) -> str:
+    title = " ".join((title or "").split())
+    if not title:
+        return ""
+    title = title.split("(", 1)[0].strip()
+    if "," in title:
+        surname, rest = [x.strip() for x in title.split(",", 1)]
+        first = (rest.split() or [""])[0]
+        return " ".join(x for x in (first, surname) if x)
+    return title
+
+
+def _wikipedia_ru_name(name: str) -> str:
+    query = urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": f"{name} теннис",
+            "format": "json",
+            "utf8": "1",
+            "srlimit": "3",
+        }
+    )
+    url = f"https://ru.wikipedia.org/w/api.php?{query}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "tennis-scores-bot/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        for row in ((data.get("query") or {}).get("search") or []):
+            title = _person_title(str(row.get("title") or ""))
+            if title and _has_cyrillic(title):
+                return title
+    except Exception:
+        return ""
     return ""
 
 
@@ -217,8 +255,6 @@ def _ru_name(name: Any) -> str:
     raw = " ".join(str(name or "").split())
     if not raw:
         return raw
-    if _has_cyrillic(raw):
-        return raw
     if ru_name_for:
         try:
             alias, ok = ru_name_for(raw)
@@ -226,10 +262,31 @@ def _ru_name(name: Any) -> str:
                 return alias
         except Exception as exc:
             print(f"[names] alias lookup failed: {exc}")
+    if _has_cyrillic(raw):
+        return raw
     sports = _sports_ru_name(raw)
     if sports:
+        if set_alias:
+            try:
+                set_alias(raw, sports)
+            except Exception as exc:
+                print(f"[names] sports alias save failed: {exc}")
         return sports
-    return _latin_to_ru(raw).title()
+    wiki = _wikipedia_ru_name(raw)
+    if wiki:
+        if set_alias:
+            try:
+                set_alias(raw, wiki)
+            except Exception as exc:
+                print(f"[names] wiki alias save failed: {exc}")
+        return wiki
+    fallback = _latin_to_ru(raw).title()
+    if set_alias and fallback:
+        try:
+            set_alias(raw, fallback)
+        except Exception as exc:
+            print(f"[names] fallback alias save failed: {exc}")
+    return fallback
 
 
 def _card_event(event: Dict[str, Any]) -> Dict[str, Any]:
