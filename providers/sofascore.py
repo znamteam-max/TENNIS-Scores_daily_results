@@ -12,8 +12,9 @@ import httpx
 
 TOUR_LABELS = {"men": "Мужской тур", "women": "Женский тур"}
 
-FLASHSCORE_BASE = "https://www.flashscore.com"
-FLASHSCORE_HOME = "https://www.flashscore.com/tennis/"
+FLASHSCORE_BASE = (os.getenv("FLASHSCORE_BASE") or "https://www.flashscorekz.com").rstrip("/")
+FLASHSCORE_LANG = os.getenv("FLASHSCORE_LANG", "ru").strip() or "ru"
+FLASHSCORE_HOME = f"{FLASHSCORE_BASE}/tennis/"
 FLASHSCORE_FSIGN = "SW9D1eZo"
 
 UAS = [
@@ -33,7 +34,7 @@ def _app_today() -> dt.date:
 async def _fetch_text(url: str, extra: Optional[Dict[str, str]] = None) -> Optional[str]:
     headers = {
         "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.5,en;q=0.4",
         "Connection": "keep-alive",
         "Referer": FLASHSCORE_HOME,
         "User-Agent": random.choice(UAS),
@@ -99,7 +100,8 @@ def _tournament_from_league(league: str) -> str:
         return raw or "Tournament"
     rest = raw.split(":", 1)[1].strip()
     parts = [p.strip() for p in rest.split(",") if p.strip()]
-    if len(parts) > 1 and parts[-1].lower() in {"clay", "hard", "grass", "indoor hard"}:
+    surfaces = {"clay", "hard", "grass", "indoor hard", "грунт", "хард", "трава", "зал"}
+    if len(parts) > 1 and parts[-1].lower() in surfaces:
         rest = ", ".join(parts[:-1])
     return rest or raw
 
@@ -119,10 +121,12 @@ def _score(fields: Dict[str, str], side: str) -> Dict[str, Any]:
     period_keys = ["BA", "BC", "BE", "BG", "BI"] if side == "home" else ["BB", "BD", "BF", "BH", "BJ"]
     tiebreak_keys = ["DA", "DC", "DE", "DG", "DI"] if side == "home" else ["DB", "DD", "DF", "DH", "DJ"]
     out: Dict[str, Any] = {}
+
     total = _num(fields.get(total_key))
     if total is not None:
         out["current"] = total
         out["display"] = total
+
     for idx, key in enumerate(period_keys, start=1):
         value = _num(fields.get(key))
         if value is not None:
@@ -166,6 +170,7 @@ def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optiona
     match_id = fields.get("AA")
     if not match_id:
         return None
+
     league_name = league.get("ZA") or league.get("ZAF") or ""
     category = _league_category(league_name)
     tournament = _tournament_from_league(league_name)
@@ -174,7 +179,10 @@ def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optiona
         "customId": match_id,
         "tournament": {
             "name": tournament,
-            "uniqueTournament": {"name": tournament, "category": {"name": category, "slug": category.lower()}},
+            "uniqueTournament": {
+                "name": tournament,
+                "category": {"name": category, "slug": category.lower()},
+            },
             "category": {"name": category, "slug": category.lower()},
         },
         "season": {"name": league.get("ZAF") or league_name},
@@ -197,9 +205,10 @@ def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optiona
 
 async def flashscore_events_by_date(day: dt.date) -> Dict[str, Any]:
     offset = (day - _app_today()).days
-    text = await _fetch_text(f"{FLASHSCORE_BASE}/x/feed/f_2_{offset}_2_en_1")
+    text = await _fetch_text(f"{FLASHSCORE_BASE}/x/feed/f_2_{offset}_2_{FLASHSCORE_LANG}_1")
     if not text or text == "0":
         return {"source": "flashscore", "events": []}
+
     league: Dict[str, str] = {}
     events: List[Dict[str, Any]] = []
     seen: set[int] = set()
@@ -322,16 +331,21 @@ def filter_by_category(events: List[Dict[str, Any]], category: str) -> List[Dict
     return [e for e in events if e.get("category") == category]
 
 
-def status_type(event: Dict[str, Any]) -> str:
-    raw = event.get("raw") or {}
-    return (event.get("status_type") or ((raw.get("status") or {}).get("type") or "")).lower()
-
-
 def tournaments_for_tour_group(events: List[Dict[str, Any]], group: str) -> List[Dict[str, Any]]:
     bucket: Dict[str, Dict[str, Any]] = {}
     for event in filter_by_tour_group(events, group):
         key = event["tournament_name"]
-        row = bucket.setdefault(key, {"tournament_name": key, "tour_group": event["tour_group"], "tour_label": event["tour_label"], "matches_count": 0, "live_count": 0, "finished_count": 0})
+        row = bucket.setdefault(
+            key,
+            {
+                "tournament_name": key,
+                "tour_group": event["tour_group"],
+                "tour_label": event["tour_label"],
+                "matches_count": 0,
+                "live_count": 0,
+                "finished_count": 0,
+            },
+        )
         row["matches_count"] += 1
         status = status_type(event)
         if status == "inprogress":
@@ -362,7 +376,13 @@ def matches_for_tournament(events: List[Dict[str, Any]], category: str, tourname
     return rows
 
 
+def status_type(event: Dict[str, Any]) -> str:
+    raw = event.get("raw") or {}
+    return (event.get("status_type") or ((raw.get("status") or {}).get("type") or "")).lower()
+
+
 def status_label(event: Dict[str, Any]) -> str:
+    status = status_type(event)
     return {
         "finished": "Завершен",
         "retired": "Завершен (снятие)",
@@ -370,7 +390,7 @@ def status_label(event: Dict[str, Any]) -> str:
         "walkover": "Тех. победа",
         "inprogress": "Идет",
         "notstarted": "Не начался",
-    }.get(status_type(event), "Статус неизвестен")
+    }.get(status, "Статус неизвестен")
 
 
 def is_finished(event: Dict[str, Any]) -> bool:
@@ -379,7 +399,8 @@ def is_finished(event: Dict[str, Any]) -> bool:
 
 def _score_obj(event: Dict[str, Any], side: str) -> Dict[str, Any]:
     raw = event.get("raw") or {}
-    obj = raw.get("homeScore" if side == "home" else "awayScore") or {}
+    key = "homeScore" if side == "home" else "awayScore"
+    obj = raw.get(key) or {}
     return obj if isinstance(obj, dict) else {}
 
 
@@ -435,7 +456,10 @@ def compact_score(event: Dict[str, Any]) -> str:
 
 
 async def _match_feed(match_id: str, feed: str) -> Optional[str]:
-    return await _fetch_text(f"{FLASHSCORE_BASE}/x/feed/{feed}_{match_id}", {"Referer": f"{FLASHSCORE_BASE}/match/{match_id}/"})
+    return await _fetch_text(
+        f"{FLASHSCORE_BASE}/x/feed/{feed}_{match_id}",
+        {"Referer": f"{FLASHSCORE_BASE}/match/{match_id}/"},
+    )
 
 
 def _parse_stats(text: Optional[str]) -> Dict[str, Dict[str, str]]:
@@ -467,7 +491,10 @@ async def enrich_event(event: Dict[str, Any]) -> Dict[str, Any]:
     if raw.get("source") != "flashscore" or not match_id:
         return event
     try:
-        stats_text, summary_text = await asyncio.gather(_match_feed(str(match_id), "df_st_2"), _match_feed(str(match_id), "df_sui_2"))
+        stats_text, summary_text = await asyncio.gather(
+            _match_feed(str(match_id), "df_st_2"),
+            _match_feed(str(match_id), "df_sui_2"),
+        )
         raw["flashscore_stats"] = _parse_stats(stats_text)
         raw["flashscore_summary"] = _parse_summary(summary_text)
         event["raw"] = raw
@@ -495,16 +522,20 @@ def _stats_lines(event: Dict[str, Any]) -> List[str]:
     if duration:
         lines.append(f"Длительность: {duration}")
     pairs = [
-        ("Aces", "эйсы"),
-        ("Double Faults", "двойные"),
-        ("Winners", "виннерсы"),
-        ("Unforced errors", "невынужденные"),
-        ("1st serve points won", "очки на первой подаче"),
-        ("Break Points Converted", "брейк-пойнты"),
-        ("Total Points Won", "всего очков"),
+        (("Aces", "Подачи навылет"), "эйсы"),
+        (("Double Faults", "Двойные ошибки"), "двойные"),
+        (("Winners", "Активно выигр. мячи"), "виннерсы"),
+        (("Unforced errors", "Невынужд. ошибки"), "невынужденные"),
+        (("1st serve points won", "Очки выигр. на п.п."), "очки на первой подаче"),
+        (("Break Points Converted", "Реализованные брейкпойнты"), "брейк-пойнты"),
+        (("Total Points Won", "Всего выигранных очков"), "всего очков"),
     ]
-    for key, label in pairs:
-        value = _stat_pair(stats, key)
+    for keys, label in pairs:
+        value = None
+        for key in keys:
+            value = _stat_pair(stats, key)
+            if value:
+                break
         if value:
             lines.append(f"{label}: {value}")
     return lines[:7]

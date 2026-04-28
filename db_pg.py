@@ -67,6 +67,15 @@ def ensure_schema() -> None:
     );
 
     alter table match_watches add column if not exists notified_at timestamptz;
+
+    create table if not exists result_cards (
+        card_id text primary key,
+        chat_id bigint not null,
+        event_id bigint,
+        event_data jsonb not null,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+    );
     """
     with _conn() as con, con.cursor() as cur:
         cur.execute(sql)
@@ -376,5 +385,49 @@ def mark_match_notified(chat_id: int, day: dt.date, event_id: int) -> bool:
               and notified_at is null
             """,
             (chat_id, day, int(event_id)),
+        )
+        return cur.rowcount > 0
+
+
+def save_result_card(card_id: str, chat_id: int, event: Dict[str, Any]) -> None:
+    card_id = (card_id or "").strip()
+    if not card_id:
+        return
+    event_id = event.get("event_id")
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            insert into result_cards (card_id, chat_id, event_id, event_data, updated_at)
+            values (%s, %s, %s, %s::jsonb, now())
+            on conflict (card_id) do update
+            set event_data=excluded.event_data, updated_at=now()
+            """,
+            (card_id, int(chat_id), int(event_id) if event_id is not None else None, json.dumps(event, ensure_ascii=False)),
+        )
+
+
+def get_result_card(chat_id: int, card_id: str) -> Optional[Dict[str, Any]]:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            select event_data
+            from result_cards
+            where chat_id=%s and card_id=%s
+            """,
+            (int(chat_id), (card_id or "").strip()),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def update_result_card(chat_id: int, card_id: str, event: Dict[str, Any]) -> bool:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            update result_cards
+            set event_data=%s::jsonb, updated_at=now()
+            where chat_id=%s and card_id=%s
+            """,
+            (json.dumps(event, ensure_ascii=False), int(chat_id), (card_id or "").strip()),
         )
         return cur.rowcount > 0

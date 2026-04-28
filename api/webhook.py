@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
@@ -15,14 +16,17 @@ from db_pg import (
     clear_state,
     ensure_schema,
     get_events_cache,
+    get_result_card,
     get_state,
     get_tz,
     list_match_watches,
     mark_match_notified,
     remove_match_watch,
+    set_alias,
     set_events_cache,
     set_state,
     set_tz,
+    update_result_card,
 )
 from providers import sofascore as ss
 from telegram_media import send_match_result
@@ -108,9 +112,152 @@ def _btn(text: str, data: str) -> Dict[str, str]:
     return {"text": text, "callback_data": data}
 
 
+def _card_review_menu(card_id: str) -> Dict[str, Any]:
+    return _kb(
+        [
+            [
+                _btn("все ок", f"card_ok|{card_id}"),
+                _btn("исправить", f"card_fix|{card_id}"),
+            ]
+        ]
+    )
+
+
+def _card_fix_menu(card_id: str) -> Dict[str, Any]:
+    return _kb(
+        [
+            [_btn("боковая плашка", f"card_edit|{card_id}|side")],
+            [_btn("фамилии", f"card_edit|{card_id}|names")],
+            [_btn("счёт", f"card_edit|{card_id}|score")],
+            [_btn("назад", f"card_back|{card_id}")],
+        ]
+    )
+
+
+def _card_edit_prompt(field: str) -> str:
+    if field == "side":
+        return "Пришли новый текст боковой плашки одним сообщением.\nПример: WTA 1000 МАДРИД   1/8 ФИНАЛА"
+    if field == "names":
+        return "Пришли фамилии в правильном порядке: двумя строками или через /.\nПример: Соболенко / Осака"
+    return "Пришли счёт. Можно так: 2 6 6 6 / 1 7 3 2\nИли так: 2-1 (6-7, 6-3, 6-2)"
+
+
 def _cut(text: str, limit: int = 92) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _split_names(text: str) -> Optional[tuple[str, str]]:
+    lines = [x.strip() for x in (text or "").splitlines() if x.strip()]
+    if len(lines) >= 2:
+        return lines[0], lines[1]
+    raw = " ".join((text or "").split())
+    for sep in (" / ", "/", " — ", " - "):
+        if sep in raw:
+            parts = [x.strip() for x in raw.split(sep, 1)]
+            if len(parts) == 2 and parts[0] and parts[1]:
+                return parts[0], parts[1]
+    return None
+
+
+def _nums(text: str) -> List[int]:
+    return [int(x) for x in re.findall(r"\d+", text or "")]
+
+
+def _parse_score(text: str) -> Optional[tuple[List[int], List[int]]]:
+    raw = " ".join((text or "").replace("\n", " / ").split())
+    if "/" in raw:
+        left, right = raw.split("/", 1)
+        home, away = _nums(left), _nums(right)
+        if len(home) >= 2 and len(away) >= 2:
+            return home[:4], away[:4]
+
+    pairs = [(int(a), int(b)) for a, b in re.findall(r"(\d+)\s*[-:]\s*(\d+)", raw)]
+    if not pairs:
+        return None
+
+    if len(pairs) > 1 and pairs[0][0] <= 3 and pairs[0][1] <= 3:
+        total, sets = pairs[0], pairs[1:]
+        if total[0] + total[1] <= len(sets):
+            return [total[0]] + [a for a, _ in sets[:3]], [total[1]] + [b for _, b in sets[:3]]
+
+    home_sets = sum(1 for a, b in pairs if a > b)
+    away_sets = sum(1 for a, b in pairs if b > a)
+    return [home_sets] + [a for a, _ in pairs[:3]], [away_sets] + [b for _, b in pairs[:3]]
+
+
+def _apply_score(event: Dict[str, Any], home: List[int], away: List[int]) -> None:
+    event["card_home_scores"] = home[:4]
+    event["card_away_scores"] = away[:4]
+    raw = event.setdefault("raw", {})
+    home_score = raw.setdefault("homeScore", {})
+    away_score = raw.setdefault("awayScore", {})
+    for score in (home_score, away_score):
+        for idx in range(1, 6):
+            score.pop(f"period{idx}", None)
+            score.pop(f"period{idx}TieBreak", None)
+
+    home_score["current"] = home[0]
+    home_score["display"] = home[0]
+    away_score["current"] = away[0]
+    away_score["display"] = away[0]
+    for idx, value in enumerate(home[1:], start=1):
+        home_score[f"period{idx}"] = value
+    for idx, value in enumerate(away[1:], start=1):
+        away_score[f"period{idx}"] = value
+    if home[0] > away[0]:
+        raw["winnerCode"] = 1
+    elif away[0] > home[0]:
+        raw["winnerCode"] = 2
+
+
+def _handle_card_edit_text(chat_id: int, text: str, payload: Dict[str, Any]) -> None:
+    card_id = str(payload.get("card_id") or "")
+    field = str(payload.get("field") or "")
+    event = get_result_card(chat_id, card_id)
+    if not event:
+        clear_state(chat_id)
+        tg_send_message(chat_id, "Не нашел эту плашку для исправления. Отправь /today и выбери матч заново.")
+        return
+
+    value = (text or "").strip()
+    if not value:
+        tg_send_message(chat_id, _card_edit_prompt(field))
+        return
+
+    if field == "side":
+        event["card_side_text"] = value.upper()
+    elif field == "names":
+        names = _split_names(value)
+        if not names:
+            tg_send_message(chat_id, "Не понял фамилии. Пришли двумя строками или через /, например: Соболенко / Осака")
+            return
+        home_name, away_name = names
+        event["card_home_name"] = home_name
+        event["card_away_name"] = away_name
+        event["home_name"] = home_name
+        event["away_name"] = away_name
+        for original, ru in (
+            (event.get("card_original_home_name"), home_name),
+            (event.get("card_original_away_name"), away_name),
+        ):
+            if original and ru:
+                set_alias(str(original), str(ru))
+    elif field == "score":
+        scores = _parse_score(value)
+        if not scores:
+            tg_send_message(chat_id, "Не понял счёт. Пример: 2 6 6 6 / 1 7 3 2 или 2-1 (6-7, 6-3, 6-2)")
+            return
+        _apply_score(event, scores[0], scores[1])
+    else:
+        clear_state(chat_id)
+        tg_send_message(chat_id, "Не понял, что исправлять. Нажми «исправить» под плашкой еще раз.")
+        return
+
+    update_result_card(chat_id, card_id, event)
+    clear_state(chat_id)
+    tg_send_message(chat_id, "Исправление принято, отправляю новую версию плашки.")
+    send_match_result(BOT_TOKEN, chat_id, event)
 
 
 def _load_events_for_chat(chat_id: int) -> List[Dict[str, Any]]:
@@ -247,6 +394,15 @@ def _refresh_matches_message(chat_id: int, message_id: int) -> None:
 
 def _handle_text(chat_id: int, text: str) -> None:
     raw = (text or "").strip()
+    state, payload = get_state(chat_id)
+    if state == "editing_card":
+        if raw.lower() in {"/cancel", "cancel", "отмена"}:
+            clear_state(chat_id)
+            tg_send_message(chat_id, "Ок, исправление отменено.")
+            return
+        _handle_card_edit_text(chat_id, raw, payload)
+        return
+
     cmd = raw.split(" ", 1)[0].lower()
     if "@" in cmd:
         cmd = cmd.split("@", 1)[0]
@@ -274,6 +430,34 @@ def _handle_text(chat_id: int, text: str) -> None:
 
 def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> None:
     try:
+        if data.startswith("card_ok|"):
+            _, card_id = data.split("|", 1)
+            tg_edit_message(chat_id, message_id, "Ок, плашка принята.")
+            tg_answer_callback_query(cq_id, "Принято")
+            return
+
+        if data.startswith("card_back|"):
+            _, card_id = data.split("|", 1)
+            tg_edit_message(chat_id, message_id, "Плашка опубликована. Проверить?", reply_markup=_card_review_menu(card_id))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("card_fix|"):
+            _, card_id = data.split("|", 1)
+            tg_edit_message(chat_id, message_id, "Что исправить?", reply_markup=_card_fix_menu(card_id))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("card_edit|"):
+            _, card_id, field = data.split("|", 2)
+            if not get_result_card(chat_id, card_id):
+                tg_answer_callback_query(cq_id, "Плашка не найдена", show_alert=True)
+                return
+            set_state(chat_id, "editing_card", {"card_id": card_id, "field": field})
+            tg_edit_message(chat_id, message_id, _card_edit_prompt(field))
+            tg_answer_callback_query(cq_id)
+            return
+
         if data == "menu|root":
             clear_state(chat_id)
             tg_edit_message(chat_id, message_id, "Выбери тур на сегодня:", reply_markup=_tour_groups_menu(chat_id))

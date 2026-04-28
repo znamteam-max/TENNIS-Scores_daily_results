@@ -56,14 +56,93 @@ def _right(draw: Any, x: int, y: int, text: str, font: Any, fill: tuple[int, int
     draw.text((x - tw, y), text, font=font, fill=fill)
 
 
+def _has_cyrillic(text: str) -> bool:
+    return any("а" <= ch.lower() <= "я" or ch.lower() == "ё" for ch in text)
+
+
+def _latin_to_ru(text: str) -> str:
+    combos = [
+        ("sch", "ш"),
+        ("shch", "щ"),
+        ("eigh", "ей"),
+        ("ough", "оу"),
+        ("kh", "х"),
+        ("ch", "ч"),
+        ("sh", "ш"),
+        ("zh", "ж"),
+        ("ts", "ц"),
+        ("ya", "я"),
+        ("ja", "я"),
+        ("yu", "ю"),
+        ("ju", "ю"),
+        ("yo", "ё"),
+        ("jo", "ё"),
+        ("ye", "е"),
+        ("ck", "к"),
+        ("ph", "ф"),
+    ]
+    chars = {
+        "a": "а",
+        "b": "б",
+        "c": "к",
+        "d": "д",
+        "e": "е",
+        "f": "ф",
+        "g": "г",
+        "h": "х",
+        "i": "и",
+        "j": "дж",
+        "k": "к",
+        "l": "л",
+        "m": "м",
+        "n": "н",
+        "o": "о",
+        "p": "п",
+        "q": "к",
+        "r": "р",
+        "s": "с",
+        "t": "т",
+        "u": "у",
+        "v": "в",
+        "w": "в",
+        "x": "кс",
+        "y": "и",
+        "z": "з",
+    }
+    out: list[str] = []
+    src = text.lower()
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if not ("a" <= ch <= "z"):
+            out.append(ch)
+            i += 1
+            continue
+        matched = False
+        for latin, ru in combos:
+            if src.startswith(latin, i):
+                out.append(ru)
+                i += len(latin)
+                matched = True
+                break
+        if not matched:
+            out.append(chars.get(ch, ch))
+            i += 1
+    return "".join(out)
+
+
 def _surname(name: str) -> str:
     raw = " ".join(str(name or "TBD").replace(",", " ").split())
     if "/" in raw:
         return " / ".join(_surname(x) for x in raw.split("/"))
     parts = raw.split()
     if len(parts) > 1 and len(parts[-1].replace(".", "")) == 1:
-        return " ".join(parts[:-1]).upper()
-    return parts[-1].upper() if parts else "TBD"
+        surname = " ".join(parts[:-1])
+    else:
+        surname = parts[-1] if parts else "TBD"
+    if not _has_cyrillic(surname):
+        surname = _latin_to_ru(surname)
+    return surname.upper()
 
 
 def _score(event: Dict[str, Any], side: str) -> Dict[str, Any]:
@@ -86,6 +165,11 @@ def _fmt(value: Any) -> str:
 
 
 def _scores(event: Dict[str, Any]) -> tuple[list[str], list[str]]:
+    custom_home = event.get("card_home_scores")
+    custom_away = event.get("card_away_scores")
+    if isinstance(custom_home, list) and isinstance(custom_away, list) and custom_home and custom_away:
+        return [str(x) for x in custom_home[:4]], [str(x) for x in custom_away[:4]]
+
     home, away = _score(event, "home"), _score(event, "away")
     h = [_fmt(_val(home, "current", "display"))]
     a = [_fmt(_val(away, "current", "display"))]
@@ -120,6 +204,9 @@ def _stage(event: Dict[str, Any]) -> str:
 
 
 def _tour_line(event: Dict[str, Any]) -> str:
+    custom = str(event.get("card_side_text") or "").strip()
+    if custom:
+        return custom.upper()
     category = str(event.get("category") or "").upper()
     tournament = str(event.get("tournament_name") or "ТУРНИР").upper()
     if "(" in tournament:
@@ -162,8 +249,8 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
     for x in (704, 805, 907):
         draw.line((x, 1068, x, 1240), fill=LINE, width=2)
 
-    home_name = _surname(str(event.get("home_name") or "TBD"))
-    away_name = _surname(str(event.get("away_name") or "TBD"))
+    home_name = _surname(str(event.get("card_home_name") or event.get("home_name") or "TBD"))
+    away_name = _surname(str(event.get("card_away_name") or event.get("away_name") or "TBD"))
     winner = _winner(event)
     draw.text((name_x, y1), home_name, font=_fit(draw, home_name, 72, 445), fill=GREEN if winner == "home" else WHITE)
     draw.text((name_x, y2), away_name, font=_fit(draw, away_name, 72, 445), fill=GREEN if winner == "away" else WHITE)
