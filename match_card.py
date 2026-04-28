@@ -293,7 +293,7 @@ def _tour_line(event: Dict[str, Any]) -> str:
 
 
 def _score_columns(count: int) -> list[int]:
-    return [816, 923, 1030] if count <= 3 else [709, 816, 923, 1030]
+    return [816, 923, 1030] if count <= 3 else [709, 824, 927, 1030]
 
 
 def _fallback_template(count: int):
