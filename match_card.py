@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import html
+import base64
 import urllib.request
 from io import BytesIO
 from typing import Any, Dict
@@ -322,6 +323,17 @@ def _base_template(count: int):
     if os.path.exists(path):
         try:
             img = Image.open(path).convert("RGBA")
+            if img.size != (W, H):
+                img = img.resize((W, H))
+            return img
+        except Exception:
+            pass
+
+    packed_path = os.path.splitext(path)[0] + ".b64"
+    if os.path.exists(packed_path):
+        try:
+            with open(packed_path, "rb") as fh:
+                img = Image.open(BytesIO(base64.b64decode(fh.read()))).convert("RGBA")
             if img.size != (W, H):
                 img = img.resize((W, H))
             return img
