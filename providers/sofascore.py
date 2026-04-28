@@ -76,7 +76,7 @@ def _league_category(league: str) -> str:
     upper = (league or "").upper()
     if "ITF" in upper:
         return "ITF"
-    if "CHALLENGER" in upper:
+    if "CHALLENGER" in upper or "ЧЕЛЛЕНДЖЕР" in upper:
         return "Challenger"
     if "WTA" in upper:
         return "WTA"
@@ -87,9 +87,21 @@ def _league_category(league: str) -> str:
 
 def _league_group(league: str) -> str:
     upper = (league or "").upper()
-    if "WTA" in upper or "WOMEN" in upper or any(x in upper for x in ("W15", "W25", "W35", "W50", "W75", "W100")):
+    if (
+        "WTA" in upper
+        or "WOMEN" in upper
+        or "ЖЕНЩИН" in upper
+        or any(x in upper for x in ("W15", "W25", "W35", "W50", "W75", "W100"))
+    ):
         return "women"
-    if "ATP" in upper or "MEN" in upper or "CHALLENGER" in upper or any(x in upper for x in ("M15", "M25", "M35", "M50")):
+    if (
+        "ATP" in upper
+        or "MEN" in upper
+        or "МУЖЧИН" in upper
+        or "CHALLENGER" in upper
+        or "ЧЕЛЛЕНДЖЕР" in upper
+        or any(x in upper for x in ("M15", "M25", "M35", "M50"))
+    ):
         return "men"
     return "other"
 
@@ -257,11 +269,11 @@ def classify(ev: Dict[str, Any]) -> str:
     hay = f"{_category_name(ev)} {_tournament_name(ev)} {_season_name(ev)}".lower()
     if any(x in hay for x in ("itf", "m15", "m25", "m35", "m50", "w15", "w25", "w35", "w50", "w75", "w100")):
         return "ITF"
-    if "challenger" in hay:
+    if "challenger" in hay or "челленджер" in hay:
         return "Challenger"
-    if "wta" in hay or "women" in hay or "female" in hay:
+    if "wta" in hay or "women" in hay or "female" in hay or "женщин" in hay:
         return "WTA"
-    if "atp" in hay or "men" in hay or "male" in hay:
+    if "atp" in hay or "men" in hay or "male" in hay or "мужчин" in hay:
         return "ATP"
     return "Other"
 
@@ -272,9 +284,9 @@ def tour_group(ev: Dict[str, Any]) -> str:
         return raw_hint
     category = classify(ev)
     hay = f"{_category_name(ev)} {_tournament_name(ev)} {_season_name(ev)}".lower()
-    if category == "WTA" or any(x in hay for x in ("wta", "women", "female", "w15", "w25", "w35", "w50", "w75", "w100")):
+    if category == "WTA" or any(x in hay for x in ("wta", "women", "female", "женщин", "w15", "w25", "w35", "w50", "w75", "w100")):
         return "women"
-    if category in {"ATP", "Challenger"} or any(x in hay for x in ("atp", "challenger", "men", "male", "m15", "m25", "m35", "m50")):
+    if category in {"ATP", "Challenger"} or any(x in hay for x in ("atp", "challenger", "челленджер", "men", "male", "мужчин", "m15", "m25", "m35", "m50")):
         return "men"
     return "other"
 
