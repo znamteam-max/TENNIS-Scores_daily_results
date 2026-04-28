@@ -310,9 +310,6 @@ def _fallback_template(count: int):
 
     draw = ImageDraw.Draw(img)
     draw.rectangle((LEFT_W, BOTTOM_Y, W, H), fill=PANEL)
-    draw.line((125, 1218, 1050, 1218), fill=LINE, width=2)
-    for x in ((848, 956) if count <= 3 else (748, 855, 962)):
-        draw.line((x, 1129, x, 1305), fill=LINE, width=2)
     return img
 
 
@@ -345,6 +342,7 @@ def _base_template(count: int):
 def _left_bar(img: Any, text: str) -> None:
     from PIL import Image, ImageDraw
 
+    text = str(text or "").upper()
     font = _font("medium", 28)
     probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
     bbox = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
@@ -352,7 +350,7 @@ def _left_bar(img: Any, text: str) -> None:
     tmp = Image.new("RGBA", (tw + 8, th + 8), (0, 0, 0, 0))
     d = ImageDraw.Draw(tmp)
     d.text((4 - bbox[0], 4 - bbox[1]), text, font=font, fill=WHITE)
-    rotated = tmp.rotate(270, expand=True)
+    rotated = tmp.rotate(90, expand=True)
     x = max(0, LEFT_W - rotated.width - 7)
     img.alpha_composite(rotated, (x, 24))
 
