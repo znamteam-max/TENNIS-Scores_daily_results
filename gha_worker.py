@@ -184,7 +184,7 @@ def _copy_finished_state(target: Dict[str, Any], source: Dict[str, Any], reverse
     return target
 
 
-async def run_once() -> None:
+async def run_once() -> dict[str, Any]:
     ensure_schema()
 
     days = {today_local()}
@@ -196,6 +196,7 @@ async def run_once() -> None:
         print(f"[OK] publishing result cards to chat_id={PUBLISH_CHAT_ID}")
 
     sent = 0
+    sources: list[dict[str, Any]] = []
     for day in sorted(days):
         data, fallback_data = await _fetch_sources(day)
         events = ss.normalize_events(data)
@@ -203,6 +204,14 @@ async def run_once() -> None:
         events_by_id = {int(e["event_id"]): e for e in events}
 
         pending = list_pending_match_watches(day)
+        sources.append(
+            {
+                "day": day.isoformat(),
+                "flashscore": len((data or {}).get("events", []) or []),
+                "sofascore": len((fallback_data or {}).get("events", []) or []),
+                "pending": len(pending),
+            }
+        )
         for watch in pending:
             event = events_by_id.get(int(watch["event_id"]))
             if event and ss.is_finished(event):
@@ -240,6 +249,7 @@ async def run_once() -> None:
                     sent += 1
 
     print(f"[OK] result notifications sent={sent}")
+    return {"sent": sent, "sources": sources}
 
 if __name__ == "__main__":
     asyncio.run(run_once())
