@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 
-SOFASCORE_BASE = (os.getenv("SOFASCORE_BASE") or "https://www.sofascore.com").rstrip("/")
+SOFASCORE_BASE = (os.getenv("SOFASCORE_BASE") or "http://api.sofascore.com/api").rstrip("/")
 
 UAS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
@@ -21,7 +21,7 @@ async def _fetch_json(url: str, extra: Optional[Dict[str, str]] = None) -> Optio
     headers = {
         "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.5,en;q=0.4",
-        "Referer": f"{SOFASCORE_BASE}/tennis/",
+        "Referer": "https://www.sofascore.com/tennis/",
         "User-Agent": random.choice(UAS),
     }
     if extra:
@@ -35,7 +35,7 @@ async def _fetch_json(url: str, extra: Optional[Dict[str, str]] = None) -> Optio
 
 
 async def events_by_date(day: dt.date) -> Dict[str, Any]:
-    url = f"{SOFASCORE_BASE}/api/v1/sport/tennis/scheduled-events/{day.isoformat()}"
+    url = f"{SOFASCORE_BASE}/v1/sport/tennis/scheduled-events/{day.isoformat()}"
     try:
         data = await _fetch_json(url)
     except Exception as exc:
