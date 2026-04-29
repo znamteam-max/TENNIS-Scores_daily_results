@@ -18,6 +18,7 @@ from db_pg import (
     mark_match_notified,
     set_events_cache,
 )
+from providers import espn_fallback
 from providers import sofascore as ss
 from providers import sofascore_fallback
 from telegram_media import send_match_result
@@ -72,10 +73,11 @@ async def _fetch_and_cache(day: dt.date) -> dict:
     return data or {"events": []}
 
 
-async def _fetch_sources(day: dt.date) -> tuple[dict, dict]:
-    primary_result, fallback_result = await asyncio.gather(
+async def _fetch_sources(day: dt.date) -> tuple[dict, dict, dict]:
+    primary_result, sofascore_result, espn_result = await asyncio.gather(
         ss.events_by_date(day),
         sofascore_fallback.events_by_date(day),
+        espn_fallback.events_by_date(day),
         return_exceptions=True,
     )
 
@@ -85,19 +87,26 @@ async def _fetch_sources(day: dt.date) -> tuple[dict, dict]:
     else:
         primary = primary_result or {"source": "flashscore", "events": []}
 
-    if isinstance(fallback_result, Exception):
-        print(f"[WARN] sofascore fallback fetch failed for {day}: {fallback_result}")
-        fallback = {"source": "sofascore", "events": []}
+    if isinstance(sofascore_result, Exception):
+        print(f"[WARN] sofascore fallback fetch failed for {day}: {sofascore_result}")
+        sofascore = {"source": "sofascore", "events": []}
     else:
-        fallback = fallback_result or {"source": "sofascore", "events": []}
+        sofascore = sofascore_result or {"source": "sofascore", "events": []}
+
+    if isinstance(espn_result, Exception):
+        print(f"[WARN] espn fallback fetch failed for {day}: {espn_result}")
+        espn = {"source": "espn", "events": []}
+    else:
+        espn = espn_result or {"source": "espn", "events": []}
 
     set_events_cache(day, primary)
     print(
         "[OK] cache updated for "
         f"{day}, flashscore={len((primary or {}).get('events', []) or [])}, "
-        f"sofascore={len((fallback or {}).get('events', []) or [])}"
+        f"sofascore={len((sofascore or {}).get('events', []) or [])}, "
+        f"espn={len((espn or {}).get('events', []) or [])}"
     )
-    return primary, fallback
+    return primary, sofascore, espn
 
 
 def _norm_tokens(value: Any) -> set[str]:
@@ -198,9 +207,9 @@ async def run_once() -> dict[str, Any]:
     sent = 0
     sources: list[dict[str, Any]] = []
     for day in sorted(days):
-        data, fallback_data = await _fetch_sources(day)
+        data, sofascore_data, espn_data = await _fetch_sources(day)
         events = ss.normalize_events(data)
-        fallback_events = ss.normalize_events(fallback_data)
+        fallback_events = ss.normalize_events(sofascore_data) + ss.normalize_events(espn_data)
         events_by_id = {int(e["event_id"]): e for e in events}
 
         pending = list_pending_match_watches(day)
@@ -208,7 +217,8 @@ async def run_once() -> dict[str, Any]:
             {
                 "day": day.isoformat(),
                 "flashscore": len((data or {}).get("events", []) or []),
-                "sofascore": len((fallback_data or {}).get("events", []) or []),
+                "sofascore": len((sofascore_data or {}).get("events", []) or []),
+                "espn": len((espn_data or {}).get("events", []) or []),
                 "pending": len(pending),
             }
         )
