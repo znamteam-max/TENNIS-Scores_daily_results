@@ -71,6 +71,18 @@ def _fit(draw: Any, text: str, size: int, width: int):
     return font
 
 
+def _fit_many(draw: Any, texts: list[str], size: int, width: int):
+    font = _font("extra_italic", size)
+    while size > 26 and any(_size(draw, text, font)[0] > width for text in texts if text):
+        size -= 2
+        font = _font("extra_italic", size)
+    return font
+
+
+def _is_pair_name(name: str) -> bool:
+    return "/" in str(name or "")
+
+
 def _right(draw: Any, x: int, y: int, text: str, font: Any, fill: tuple[int, int, int, int]) -> None:
     tw, _ = _size(draw, text, font)
     draw.text((x - tw, y), text, font=font, fill=fill)
@@ -428,8 +440,13 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
         top_scores, bottom_scores = home_scores, away_scores
         top_winner, bottom_winner = winner == "home", False
     name_width = max(360, cols[0] - name_x - 55)
-    draw.text((name_x, y1), top_name, font=_fit(draw, top_name, 76, name_width), fill=GREEN if top_winner else WHITE)
-    draw.text((name_x, y2), bottom_name, font=_fit(draw, bottom_name, 76, name_width), fill=GREEN if bottom_winner else WHITE)
+    if _is_pair_name(top_name) or _is_pair_name(bottom_name):
+        top_font = bottom_font = _fit_many(draw, [top_name, bottom_name], 76, name_width)
+    else:
+        top_font = _fit(draw, top_name, 76, name_width)
+        bottom_font = _fit(draw, bottom_name, 76, name_width)
+    draw.text((name_x, y1), top_name, font=top_font, fill=GREEN if top_winner else WHITE)
+    draw.text((name_x, y2), bottom_name, font=bottom_font, fill=GREEN if bottom_winner else WHITE)
 
     score_font = _score_font(draw, top_scores + bottom_scores)
     for idx, value in enumerate(top_scores):
