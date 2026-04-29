@@ -295,6 +295,17 @@ def _score_columns(count: int) -> list[int]:
     return [816, 923, 1030] if count <= 3 else [709, 824, 927, 1030]
 
 
+def _score_font(draw: Any, values: list[str]):
+    cleaned = [str(value) for value in values if str(value)]
+    size = 64 if any(len(value) > 1 for value in cleaned) else 76
+    font = _font("extra_italic", size)
+    max_width = 62 if any(len(value) > 1 for value in cleaned) else 90
+    while size > 52 and any(_size(draw, value, font)[0] > max_width for value in cleaned):
+        size -= 2
+        font = _font("extra_italic", size)
+    return font
+
+
 def _base_template(count: int):
     from PIL import Image
 
@@ -393,15 +404,23 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
     home_name = _surname(str(event.get("card_home_name") or event.get("home_name") or "TBD"))
     away_name = _surname(str(event.get("card_away_name") or event.get("away_name") or "TBD"))
     winner = _winner(event)
+    if winner == "away":
+        top_name, bottom_name = away_name, home_name
+        top_scores, bottom_scores = away_scores, home_scores
+        top_winner, bottom_winner = True, False
+    else:
+        top_name, bottom_name = home_name, away_name
+        top_scores, bottom_scores = home_scores, away_scores
+        top_winner, bottom_winner = winner == "home", False
     name_width = max(360, cols[0] - name_x - 55)
-    draw.text((name_x, y1), home_name, font=_fit(draw, home_name, 76, name_width), fill=GREEN if winner == "home" else WHITE)
-    draw.text((name_x, y2), away_name, font=_fit(draw, away_name, 76, name_width), fill=GREEN if winner == "away" else WHITE)
+    draw.text((name_x, y1), top_name, font=_fit(draw, top_name, 76, name_width), fill=GREEN if top_winner else WHITE)
+    draw.text((name_x, y2), bottom_name, font=_fit(draw, bottom_name, 76, name_width), fill=GREEN if bottom_winner else WHITE)
 
-    score_font = _font("extra_italic", 76)
-    for idx, value in enumerate(home_scores):
-        _right(draw, cols[idx], score_y1, value, score_font, GREEN if idx == 0 and winner == "home" else WHITE)
-    for idx, value in enumerate(away_scores):
-        _right(draw, cols[idx], score_y2, value, score_font, GREEN if idx == 0 and winner == "away" else WHITE)
+    score_font = _score_font(draw, top_scores + bottom_scores)
+    for idx, value in enumerate(top_scores):
+        _right(draw, cols[idx], score_y1, value, score_font, GREEN if idx == 0 and top_winner else WHITE)
+    for idx, value in enumerate(bottom_scores):
+        _right(draw, cols[idx], score_y2, value, score_font, GREEN if idx == 0 and bottom_winner else WHITE)
 
     out = BytesIO()
     img.save(out, format="PNG")

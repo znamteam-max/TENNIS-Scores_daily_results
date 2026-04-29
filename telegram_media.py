@@ -416,14 +416,20 @@ def send_match_result(
                 or _to_int_chat_id(review_chat_id)
                 or _to_int_chat_id(chat_id)
             )
-            review_destination: ChatId = storage_chat_id if storage_chat_id is not None else (review_chat_id or chat_id)
+            review_storage_chat_id = _to_int_chat_id(review_chat_id) or storage_chat_id or _to_int_chat_id(chat_id)
+            review_destination: ChatId = (
+                review_chat_id
+                if review_chat_id is not None
+                else (storage_chat_id if storage_chat_id is not None else chat_id)
+            )
             if save_result_card:
                 try:
-                    if storage_chat_id is not None:
+                    if review_storage_chat_id is not None:
                         event["telegram_card_id"] = card_id
-                        event["telegram_chat_id"] = storage_chat_id
+                        event["telegram_chat_id"] = review_storage_chat_id
+                        event["telegram_publish_chat_id"] = storage_chat_id
                         event["telegram_message_refs"] = message_refs
-                        save_result_card(card_id, storage_chat_id, event)
+                        save_result_card(card_id, review_storage_chat_id, event)
                 except Exception as exc:
                     print(f"[card] save failed: {exc}")
             if caption is None:
@@ -440,10 +446,10 @@ def send_match_result(
             review_ref = _response_message_ref(review_response)
             if review_ref:
                 message_refs.append(review_ref)
-            if save_result_card and storage_chat_id is not None:
+            if save_result_card and review_storage_chat_id is not None:
                 try:
                     event["telegram_message_refs"] = message_refs
-                    save_result_card(card_id, storage_chat_id, event)
+                    save_result_card(card_id, review_storage_chat_id, event)
                 except Exception as exc:
                     print(f"[card] save message refs failed: {exc}")
             return True

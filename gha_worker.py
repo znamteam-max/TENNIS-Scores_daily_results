@@ -253,6 +253,7 @@ async def run_once() -> dict[str, Any]:
                 BOT_TOKEN,
                 _publish_chat_id(source_chat_id),
                 event,
+                review_chat_id=source_chat_id,
                 allow_text_fallback=False,
             ):
                 if mark_match_notified(source_chat_id, day, int(watch["event_id"])):
