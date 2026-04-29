@@ -306,6 +306,10 @@ def _score_font(draw: Any, values: list[str]):
     return font
 
 
+def _score_x(x: int, value: str) -> int:
+    return x + 10 if len(str(value)) > 1 else x
+
+
 def _base_template(count: int):
     from PIL import Image
 
@@ -418,9 +422,9 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
 
     score_font = _score_font(draw, top_scores + bottom_scores)
     for idx, value in enumerate(top_scores):
-        _right(draw, cols[idx], score_y1, value, score_font, GREEN if idx == 0 and top_winner else WHITE)
+        _right(draw, _score_x(cols[idx], value), score_y1, value, score_font, GREEN if idx == 0 and top_winner else WHITE)
     for idx, value in enumerate(bottom_scores):
-        _right(draw, cols[idx], score_y2, value, score_font, GREEN if idx == 0 and bottom_winner else WHITE)
+        _right(draw, _score_x(cols[idx], value), score_y2, value, score_font, GREEN if idx == 0 and bottom_winner else WHITE)
 
     out = BytesIO()
     img.save(out, format="PNG")
