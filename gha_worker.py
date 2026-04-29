@@ -15,6 +15,7 @@ from db_pg import (
     ensure_schema,
     list_pending_match_watch_days,
     list_pending_match_watches,
+    mark_event_notified,
     mark_match_notified,
     set_events_cache,
 )
@@ -222,7 +223,11 @@ async def run_once() -> dict[str, Any]:
                 "pending": len(pending),
             }
         )
+        published_events: set[tuple[dt.date, int]] = set()
         for watch in pending:
+            event_key = (day, int(watch["event_id"]))
+            if PUBLISH_CHAT_ID and event_key in published_events:
+                continue
             event = events_by_id.get(int(watch["event_id"]))
             if event and ss.is_finished(event):
                 resolved_event = event
@@ -254,9 +259,14 @@ async def run_once() -> dict[str, Any]:
                 _publish_chat_id(source_chat_id),
                 event,
                 review_chat_id=source_chat_id,
+                review_in_publish_chat=bool(PUBLISH_CHAT_ID),
                 allow_text_fallback=False,
             ):
-                if mark_match_notified(source_chat_id, day, int(watch["event_id"])):
+                if PUBLISH_CHAT_ID:
+                    published_events.add(event_key)
+                    if mark_event_notified(day, int(watch["event_id"])):
+                        sent += 1
+                elif mark_match_notified(source_chat_id, day, int(watch["event_id"])):
                     sent += 1
 
     print(f"[OK] result notifications sent={sent}")

@@ -62,6 +62,7 @@ def _send_result(chat_id: int, event: Dict[str, Any]) -> bool:
         _publish_chat_id(chat_id),
         event,
         review_chat_id=chat_id,
+        review_in_publish_chat=bool(PUBLISH_CHAT_ID),
         allow_text_fallback=False,
     )
 
@@ -208,6 +209,10 @@ def _card_edit_prompt(field: str) -> str:
     if field == "photo":
         return "Пришли фото картинкой, файлом или прямой ссылкой на изображение. Чтобы убрать фото, напиши: убрать"
     return "Пришли счёт. Можно так: 2 6 6 6 / 1 7 3 2\nИли так: 2-1 (6-7, 6-3, 6-2)"
+
+
+def _group_edit_prompt(field: str) -> str:
+    return _card_edit_prompt(field) + "\n\nВ группе ответь реплаем на это сообщение, чтобы бот точно увидел правку."
 
 
 def _cut(text: str, limit: int = 92) -> str:
@@ -536,10 +541,13 @@ def _refresh_matches_message(chat_id: int, message_id: int) -> None:
     )
 
 
-def _handle_text(chat_id: int, text: str) -> None:
+def _handle_text(chat_id: int, text: str, user_id: Optional[int] = None) -> None:
     raw = (text or "").strip()
     state, payload = get_state(chat_id)
     if state == "editing_card":
+        editor_id = payload.get("editor_id")
+        if editor_id and user_id and int(editor_id) != int(user_id):
+            return
         if raw.lower() in {"/cancel", "cancel", "отмена"}:
             clear_state(chat_id)
             tg_send_message(chat_id, "Ок, исправление отменено.")
@@ -575,7 +583,7 @@ def _handle_text(chat_id: int, text: str) -> None:
     tg_send_message(chat_id, "Команды:\n/today - выбрать матчи\n/my - мои матчи\n/tz Europe/Helsinki - сменить часовой пояс")
 
 
-def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> None:
+def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_id: Optional[int] = None) -> None:
     try:
         if data == "noop":
             tg_answer_callback_query(cq_id)
@@ -604,8 +612,11 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str) -> No
             if not get_result_card(chat_id, card_id):
                 tg_answer_callback_query(cq_id, "Плашка не найдена", show_alert=True)
                 return
-            set_state(chat_id, "editing_card", {"card_id": card_id, "field": field})
-            tg_edit_message(chat_id, message_id, _card_edit_prompt(field))
+            payload: Dict[str, Any] = {"card_id": card_id, "field": field}
+            if user_id:
+                payload["editor_id"] = int(user_id)
+            set_state(chat_id, "editing_card", payload)
+            tg_edit_message(chat_id, message_id, _group_edit_prompt(field) if chat_id < 0 else _card_edit_prompt(field))
             tg_answer_callback_query(cq_id)
             return
 
@@ -770,16 +781,21 @@ class handler(BaseHTTPRequestHandler):
             if "message" in upd:
                 msg = upd["message"] or {}
                 chat_id = int((msg.get("chat") or {})["id"])
+                user_id = int((msg.get("from") or {}).get("id") or 0)
                 state, payload = get_state(chat_id)
-                if state == "editing_card" and str(payload.get("field") or "") == "photo" and _handle_card_photo_upload(chat_id, msg, payload):
+                editor_id = payload.get("editor_id") if state == "editing_card" else None
+                if editor_id and user_id and int(editor_id) != int(user_id):
+                    pass
+                elif state == "editing_card" and str(payload.get("field") or "") == "photo" and _handle_card_photo_upload(chat_id, msg, payload):
                     pass
                 else:
-                    _handle_text(chat_id, msg.get("text") or msg.get("caption") or "")
+                    _handle_text(chat_id, msg.get("text") or msg.get("caption") or "", user_id=user_id)
             elif "callback_query" in upd:
                 cq = upd["callback_query"] or {}
                 msg = cq.get("message") or {}
                 chat_id = int((msg.get("chat") or {})["id"])
-                _handle_callback(chat_id, int(msg["message_id"]), cq.get("id") or "", cq.get("data") or "")
+                user_id = int((cq.get("from") or {}).get("id") or 0)
+                _handle_callback(chat_id, int(msg["message_id"]), cq.get("id") or "", cq.get("data") or "", user_id=user_id)
             else:
                 print(f"[webhook] unsupported update keys={list(upd.keys())}")
 

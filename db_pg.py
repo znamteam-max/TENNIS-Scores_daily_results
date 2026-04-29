@@ -400,10 +400,28 @@ def save_result_card(card_id: str, chat_id: int, event: Dict[str, Any]) -> None:
             insert into result_cards (card_id, chat_id, event_id, event_data, updated_at)
             values (%s, %s, %s, %s::jsonb, now())
             on conflict (card_id) do update
-            set event_data=excluded.event_data, updated_at=now()
+            set chat_id=excluded.chat_id,
+                event_id=excluded.event_id,
+                event_data=excluded.event_data,
+                updated_at=now()
             """,
             (card_id, int(chat_id), int(event_id) if event_id is not None else None, json.dumps(event, ensure_ascii=False)),
         )
+
+
+def mark_event_notified(day: dt.date, event_id: int) -> int:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            update match_watches
+            set notified_at=now()
+            where day=%s
+              and event_id=%s
+              and notified_at is null
+            """,
+            (day, int(event_id)),
+        )
+        return cur.rowcount
 
 
 def get_result_card(chat_id: int, card_id: str) -> Optional[Dict[str, Any]]:

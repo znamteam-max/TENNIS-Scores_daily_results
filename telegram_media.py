@@ -376,6 +376,7 @@ def send_match_result(
     chat_id: ChatId,
     event: Dict[str, Any],
     review_chat_id: Optional[ChatId] = None,
+    review_in_publish_chat: bool = False,
     allow_text_fallback: bool = False,
     card_id: Optional[str] = None,
     delete_previous: bool = False,
@@ -416,12 +417,16 @@ def send_match_result(
                 or _to_int_chat_id(review_chat_id)
                 or _to_int_chat_id(chat_id)
             )
-            review_storage_chat_id = _to_int_chat_id(review_chat_id) or storage_chat_id or _to_int_chat_id(chat_id)
-            review_destination: ChatId = (
-                review_chat_id
-                if review_chat_id is not None
-                else (storage_chat_id if storage_chat_id is not None else chat_id)
-            )
+            if review_in_publish_chat and storage_chat_id is not None:
+                review_storage_chat_id = storage_chat_id
+                review_destination: ChatId = storage_chat_id
+            else:
+                review_storage_chat_id = _to_int_chat_id(review_chat_id) or storage_chat_id or _to_int_chat_id(chat_id)
+                review_destination = (
+                    review_chat_id
+                    if review_chat_id is not None
+                    else (storage_chat_id if storage_chat_id is not None else chat_id)
+                )
             if save_result_card:
                 try:
                     if review_storage_chat_id is not None:
