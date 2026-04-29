@@ -121,7 +121,7 @@ def _slug(text: str) -> str:
 
 
 def _sports_ru_name(name: str) -> str:
-    parts = [p for p in re.split(r"\s+", _strip_accents(name).strip()) if p and not re.fullmatch(r"[A-Za-z]\.?")]
+    parts = [p for p in re.split(r"\s+", _strip_accents(name).strip()) if p and not (len(p.rstrip(".")) == 1 and p.rstrip(".").isalpha())]
     if not parts:
         return ""
     candidates = []
