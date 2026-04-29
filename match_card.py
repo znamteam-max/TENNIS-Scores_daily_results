@@ -305,6 +305,10 @@ def _score_centers(count: int) -> list[int]:
     return [795, 902, 1009] if count <= 3 else [696, 803, 910, 1007]
 
 
+def _score_center_x(x: int, value: str) -> int:
+    return x + 5 if len(str(value)) > 1 else x
+
+
 def _score_font(draw: Any, values: list[str]):
     cleaned = [str(value) for value in values if str(value)]
     size = 64 if any(len(value) > 1 for value in cleaned) else 76
@@ -372,8 +376,8 @@ def _overlay_photo(img: Any, event: Dict[str, Any]) -> None:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             photo = Image.open(BytesIO(resp.read())).convert("RGBA")
-        photo = ImageOps.fit(photo, (959, 1017), method=Image.Resampling.LANCZOS, centering=(0.5, 0.0))
-        img.alpha_composite(photo, (W - 959, 0))
+        photo = ImageOps.fit(photo, (W - LEFT_W, BOTTOM_Y), method=Image.Resampling.LANCZOS, centering=(0.5, 0.0))
+        img.alpha_composite(photo, (LEFT_W, 0))
     except Exception as exc:
         print(f"[card] photo overlay failed: {exc}")
 
@@ -429,9 +433,9 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
 
     score_font = _score_font(draw, top_scores + bottom_scores)
     for idx, value in enumerate(top_scores):
-        _center(draw, centers[idx], score_y1, value, score_font, GREEN if idx == 0 and top_winner else WHITE)
+        _center(draw, _score_center_x(centers[idx], value), score_y1, value, score_font, GREEN if idx == 0 and top_winner else WHITE)
     for idx, value in enumerate(bottom_scores):
-        _center(draw, centers[idx], score_y2, value, score_font, GREEN if idx == 0 and bottom_winner else WHITE)
+        _center(draw, _score_center_x(centers[idx], value), score_y2, value, score_font, GREEN if idx == 0 and bottom_winner else WHITE)
 
     out = BytesIO()
     img.save(out, format="PNG")
