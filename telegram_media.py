@@ -387,12 +387,10 @@ def send_match_result(
     card_id = (card_id or event.get("telegram_card_id") or "").strip() or uuid.uuid4().hex[:12]
     review_chat_id = review_chat_id if review_chat_id is not None else None
     event = _card_event(event)
+    previous_refs = event.get("telegram_message_refs") or []
     text = ss.result_message(event, include_stats=False)
     stats_text = ss.stats_message(event)
     try:
-        if delete_previous or event.get("telegram_message_refs"):
-            _delete_previous_messages(bot_token, event)
-
         t0 = time.monotonic()
         png = build_match_card_png(event)
         print(f"[card] png rendered bytes={len(png)} elapsed={time.monotonic() - t0:.2f}s event_id={event.get('event_id')}")
@@ -451,6 +449,8 @@ def send_match_result(
             review_ref = _response_message_ref(review_response)
             if review_ref:
                 message_refs.append(review_ref)
+            if delete_previous or previous_refs:
+                _delete_previous_messages(bot_token, {"telegram_message_refs": previous_refs})
             if save_result_card and review_storage_chat_id is not None:
                 try:
                     event["telegram_message_refs"] = message_refs
@@ -464,5 +464,13 @@ def send_match_result(
         print(f"[card] render/send failed: {exc}")
 
     if not allow_text_fallback:
+        failure_chat_id: ChatId = review_chat_id if review_chat_id is not None else chat_id
+        _post_json(
+            _api_url(bot_token, "sendMessage"),
+            {
+                "chat_id": failure_chat_id,
+                "text": "Не смог отправить новую плашку. Старую версию не удалял, попробуй прислать фото меньшего размера или повторить позже.",
+            },
+        )
         return False
     return bool(_post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text}))
