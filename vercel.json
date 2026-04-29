@@ -3,6 +3,9 @@
     "api/webhook.py": {
       "maxDuration": 60
     },
+    "api/poll.py": {
+      "maxDuration": 60
+    },
     "api/card_preview.py": {
       "maxDuration": 60
     }
