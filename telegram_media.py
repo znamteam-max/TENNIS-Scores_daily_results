@@ -121,7 +121,7 @@ def _slug(text: str) -> str:
 
 
 def _sports_ru_name(name: str) -> str:
-    parts = [p for p in re.split(r"\s+", _strip_accents(name).strip()) if p and not re.fullmatch(r"[A-Za-z]\.?", p)]
+    parts = [p for p in re.split(r"\s+", _strip_accents(name).strip()) if p and not re.fullmatch(r"[A-Za-z]\.?")]
     if not parts:
         return ""
     candidates = []
@@ -315,8 +315,53 @@ def _review_markup(card_id: str) -> Dict[str, Any]:
 ChatId = Union[int, str]
 
 
-def _send_review_menu(bot_token: str, chat_id: ChatId, card_id: str) -> None:
-    _post_json(
+def _response_message_ref(response: Optional[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+    result = (response or {}).get("result")
+    if not isinstance(result, dict):
+        return None
+    chat = result.get("chat") or {}
+    chat_id = chat.get("id")
+    message_id = result.get("message_id")
+    try:
+        return {"chat_id": int(chat_id), "message_id": int(message_id)}
+    except Exception:
+        return None
+
+
+def _chat_id_from_response(response: Optional[Dict[str, Any]]) -> Optional[int]:
+    ref = _response_message_ref(response)
+    return int(ref["chat_id"]) if ref else None
+
+
+def _to_int_chat_id(value: Optional[ChatId]) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _delete_previous_messages(bot_token: str, event: Dict[str, Any]) -> None:
+    refs = event.get("telegram_message_refs") or []
+    if not isinstance(refs, list):
+        return
+    seen: set[tuple[int, int]] = set()
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        try:
+            chat_id = int(ref.get("chat_id"))
+            message_id = int(ref.get("message_id"))
+        except Exception:
+            continue
+        key = (chat_id, message_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        _post_json(_api_url(bot_token, "deleteMessage"), {"chat_id": chat_id, "message_id": message_id})
+
+
+def _send_review_menu(bot_token: str, chat_id: ChatId, card_id: str) -> Optional[Dict[str, Any]]:
+    return _post_json(
         _api_url(bot_token, "sendMessage"),
         {
             "chat_id": chat_id,
@@ -332,20 +377,26 @@ def send_match_result(
     event: Dict[str, Any],
     review_chat_id: Optional[ChatId] = None,
     allow_text_fallback: bool = False,
+    card_id: Optional[str] = None,
+    delete_previous: bool = False,
 ) -> bool:
     if not bot_token:
         return False
 
-    card_id = uuid.uuid4().hex[:12]
-    review_chat_id = review_chat_id if review_chat_id is not None else chat_id
+    card_id = (card_id or event.get("telegram_card_id") or "").strip() or uuid.uuid4().hex[:12]
+    review_chat_id = review_chat_id if review_chat_id is not None else None
     event = _card_event(event)
     text = ss.result_message(event, include_stats=False)
     stats_text = ss.stats_message(event)
     try:
+        if delete_previous or event.get("telegram_message_refs"):
+            _delete_previous_messages(bot_token, event)
+
         t0 = time.monotonic()
         png = build_match_card_png(event)
         print(f"[card] png rendered bytes={len(png)} elapsed={time.monotonic() - t0:.2f}s event_id={event.get('event_id')}")
         caption: Optional[str] = text if len(text) <= 1000 else None
+        message_refs: list[Dict[str, int]] = []
         t1 = time.monotonic()
         document = _post_multipart(
             _api_url(bot_token, "sendDocument"),
@@ -357,16 +408,44 @@ def send_match_result(
         )
         print(f"[card] sendDocument elapsed={time.monotonic() - t1:.2f}s ok={document.get('ok') if document else None}")
         if document and document.get("ok", True):
+            document_ref = _response_message_ref(document)
+            if document_ref:
+                message_refs.append(document_ref)
+            storage_chat_id = (
+                _chat_id_from_response(document)
+                or _to_int_chat_id(review_chat_id)
+                or _to_int_chat_id(chat_id)
+            )
+            review_destination: ChatId = storage_chat_id if storage_chat_id is not None else (review_chat_id or chat_id)
             if save_result_card:
                 try:
-                    save_result_card(card_id, int(review_chat_id), event)
+                    if storage_chat_id is not None:
+                        event["telegram_card_id"] = card_id
+                        event["telegram_chat_id"] = storage_chat_id
+                        event["telegram_message_refs"] = message_refs
+                        save_result_card(card_id, storage_chat_id, event)
                 except Exception as exc:
                     print(f"[card] save failed: {exc}")
             if caption is None:
-                _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
+                text_response = _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": text})
+                text_ref = _response_message_ref(text_response)
+                if text_ref:
+                    message_refs.append(text_ref)
             if stats_text:
-                _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": stats_text})
-            _send_review_menu(bot_token, review_chat_id, card_id)
+                stats_response = _post_json(_api_url(bot_token, "sendMessage"), {"chat_id": chat_id, "text": stats_text})
+                stats_ref = _response_message_ref(stats_response)
+                if stats_ref:
+                    message_refs.append(stats_ref)
+            review_response = _send_review_menu(bot_token, review_destination, card_id)
+            review_ref = _response_message_ref(review_response)
+            if review_ref:
+                message_refs.append(review_ref)
+            if save_result_card and storage_chat_id is not None:
+                try:
+                    event["telegram_message_refs"] = message_refs
+                    save_result_card(card_id, storage_chat_id, event)
+                except Exception as exc:
+                    print(f"[card] save message refs failed: {exc}")
             return True
         if document:
             print(f"[card] sendDocument failed response={document}")
