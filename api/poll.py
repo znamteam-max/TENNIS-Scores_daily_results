@@ -23,8 +23,8 @@ class handler(BaseHTTPRequestHandler):
                 return
 
         try:
-            asyncio.run(run_once())
-            payload = {"ok": True}
+            result = asyncio.run(run_once()) or {}
+            payload = {"ok": True, **result}
         except Exception as exc:
             print(f"[ERR] cron poll failed: {exc}")
             payload = {"ok": False, "error": str(exc)}
