@@ -28,6 +28,11 @@ from db_pg import (
     set_tz,
     update_result_card,
 )
+from daily_summary import (
+    build_daily_summary_for_tournament,
+    mark_daily_summary_for_tournament,
+    summary_tournaments_for_menu,
+)
 from providers import sofascore as ss
 from telegram_media import send_match_result
 
@@ -43,6 +48,7 @@ PUBLISH_CHAT_ID = (
 BOT_COMMANDS = [
     {"command": "start", "description": "открыть главное меню"},
     {"command": "today", "description": "выбрать матчи на сегодня"},
+    {"command": "summary", "description": "опубликовать итоги игрового дня"},
     {"command": "my", "description": "показать выбранные матчи"},
     {"command": "tz", "description": "сменить часовой пояс, например Europe/Helsinki"},
 ]
@@ -67,12 +73,13 @@ def _send_result(chat_id: int, event: Dict[str, Any]) -> bool:
     )
 
 
-def _post_json(url: str, payload: Dict[str, Any]) -> None:
+def _post_json(url: str, payload: Dict[str, Any]) -> bool:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             resp.read()
+        return True
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -80,17 +87,19 @@ def _post_json(url: str, payload: Dict[str, Any]) -> None:
         except Exception:
             body = "<body read failed>"
         print(f"[tg] request failed: status={exc.code} body={body}")
+        return False
     except urllib.error.URLError as exc:
         print(f"[tg] request failed: {exc}")
+        return False
 
 
-def tg_send_message(chat_id: int, text: str, reply_markup: Optional[dict] = None) -> None:
+def tg_send_message(chat_id: int | str, text: str, reply_markup: Optional[dict] = None) -> bool:
     if not BOT_TOKEN:
-        return
+        return False
     payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    _post_json(_tg_api("sendMessage"), payload)
+    return _post_json(_tg_api("sendMessage"), payload)
 
 
 def tg_edit_message(chat_id: int, message_id: int, text: str, reply_markup: Optional[dict] = None) -> None:
@@ -418,6 +427,7 @@ def _tour_groups_menu(chat_id: int) -> Dict[str, Any]:
         [
             [_btn("Мужской тур", "group|men")],
             [_btn("Женский тур", "group|women")],
+            [_btn("📊 Итоги дня", "menu|summary")],
             [_btn("Мои матчи", "menu|mine")],
         ]
     )
@@ -455,6 +465,92 @@ def _tournaments_menu(chat_id: int, group: str, day: Optional[dt.date] = None) -
     rows.append([_date_switch_button(chat_id, group, day)])
     rows.append([_btn("Назад", "menu|root")])
     return _kb(rows)
+
+
+def _summary_dates_menu(chat_id: int) -> Dict[str, Any]:
+    today = _today(chat_id)
+    yesterday = today - dt.timedelta(days=1)
+    return _kb(
+        [
+            [
+                _btn("Сегодня", f"sum_date|{today.isoformat()}"),
+                _btn("Вчера", f"sum_date|{yesterday.isoformat()}"),
+            ],
+            [_btn("Назад", "menu|root")],
+        ]
+    )
+
+
+def _summary_groups_title(chat_id: int, day: dt.date) -> str:
+    return f"📊 Итоги игрового дня - {_day_label(chat_id, day)}\nВыбери тур:"
+
+
+def _summary_groups_menu(chat_id: int, day: dt.date) -> Dict[str, Any]:
+    return _kb(
+        [
+            [
+                _btn("Мужчины", f"sum_group|men|{day.isoformat()}"),
+                _btn("Женщины", f"sum_group|women|{day.isoformat()}"),
+            ],
+            [_btn("К датам", "menu|summary")],
+            [_btn("В начало", "menu|root")],
+        ]
+    )
+
+
+def _summary_tournaments_map(chat_id: int, group: str, day: dt.date) -> List[Dict[str, Any]]:
+    return [
+        item
+        for item in summary_tournaments_for_menu(_load_events_for_chat(chat_id, day))
+        if item.get("tour_group") == group
+    ]
+
+
+def _summary_tournaments_title(chat_id: int, group: str, day: dt.date) -> str:
+    return f"📊 {_day_label(chat_id, day).capitalize()} - {ss.tour_label(group).lower()}\nВыбери турнир:"
+
+
+def _summary_tournament_label(item: Dict[str, Any]) -> str:
+    status = str(item.get("tournament_status") or "").strip()
+    name = str(item.get("tournament_name") or "").strip()
+    title = f"{status} · {name}" if status else name
+    bits = [f"{item.get('finished_count', 0)}/{item.get('matches_count', 0)} заверш."]
+    if item.get("live_count"):
+        bits.append(f"идет {item['live_count']}")
+    bits.append("коэф." if item.get("has_odds") else "без коэф.")
+    return _cut(f"{title} ({', '.join(bits)})", 100)
+
+
+def _summary_tournaments_menu(chat_id: int, group: str, day: dt.date) -> Dict[str, Any]:
+    rows: List[List[Dict[str, str]]] = []
+    for idx, item in enumerate(_summary_tournaments_map(chat_id, group, day)[:90], start=1):
+        rows.append([_btn(_summary_tournament_label(item), f"sum_tour|{group}|{day.isoformat()}|{idx}")])
+    rows.append([_btn("К турам", f"sum_date|{day.isoformat()}")])
+    rows.append([_btn("В начало", "menu|root")])
+    return _kb(rows)
+
+
+def _summary_tournament_title(chat_id: int, group: str, day: dt.date, item: Dict[str, Any]) -> str:
+    status = str(item.get("tournament_status") or "").strip()
+    name = str(item.get("tournament_name") or "").strip()
+    title = f"{status} · {name}" if status else name
+    state = "все матчи завершены" if item.get("all_finished") else "день еще не завершен"
+    odds = "коэффициенты есть" if item.get("has_odds") else "коэффициентов нет"
+    return (
+        f"📊 {title}\n"
+        f"{ss.tour_label(group)} - {_day_label(chat_id, day)}\n"
+        f"{item.get('finished_count', 0)}/{item.get('matches_count', 0)} завершено, {state}, {odds}."
+    )
+
+
+def _summary_tournament_menu(group: str, day: dt.date, idx: int) -> Dict[str, Any]:
+    return _kb(
+        [
+            [_btn("Опубликовать итог дня", f"sum_publish|{group}|{day.isoformat()}|{idx}")],
+            [_btn("К турнирам", f"sum_group|{group}|{day.isoformat()}")],
+            [_btn("В начало", "menu|root")],
+        ]
+    )
 
 
 def _match_label(chat_id: int, match: Dict[str, Any], selected: bool) -> str:
@@ -562,7 +658,13 @@ def _handle_text(chat_id: int, text: str, user_id: Optional[int] = None) -> None
     if cmd in {"/start", "start", "/today", "today"}:
         tg_set_my_commands()
         clear_state(chat_id)
-        tg_send_message(chat_id, "Выбери тур на сегодня:", reply_markup=_tour_groups_menu(chat_id))
+        tg_send_message(chat_id, "Выбери раздел:", reply_markup=_tour_groups_menu(chat_id))
+        return
+
+    if cmd in {"/summary", "summary"}:
+        tg_set_my_commands()
+        clear_state(chat_id)
+        tg_send_message(chat_id, "📊 Итоги игрового дня\nВыбери дату:", reply_markup=_summary_dates_menu(chat_id))
         return
 
     if cmd in {"/my", "my"}:
@@ -580,7 +682,7 @@ def _handle_text(chat_id: int, text: str, user_id: Optional[int] = None) -> None
             tg_send_message(chat_id, "Не смог распознать timezone. Пример: Europe/Helsinki")
         return
 
-    tg_send_message(chat_id, "Команды:\n/today - выбрать матчи\n/my - мои матчи\n/tz Europe/Helsinki - сменить часовой пояс")
+    tg_send_message(chat_id, "Команды:\n/today - выбрать матчи\n/summary - итоги игрового дня\n/my - мои матчи\n/tz Europe/Helsinki - сменить часовой пояс")
 
 
 def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_id: Optional[int] = None) -> None:
@@ -622,8 +724,92 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
 
         if data == "menu|root":
             clear_state(chat_id)
-            tg_edit_message(chat_id, message_id, "Выбери тур на сегодня:", reply_markup=_tour_groups_menu(chat_id))
+            tg_edit_message(chat_id, message_id, "Выбери раздел:", reply_markup=_tour_groups_menu(chat_id))
             tg_answer_callback_query(cq_id)
+            return
+
+        if data == "menu|summary":
+            clear_state(chat_id)
+            tg_edit_message(chat_id, message_id, "📊 Итоги игрового дня\nВыбери дату:", reply_markup=_summary_dates_menu(chat_id))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_date|"):
+            _, day_s = data.split("|", 1)
+            day = _parse_day(chat_id, day_s)
+            set_state(chat_id, "summary_day", {"day": day.isoformat()})
+            tg_edit_message(chat_id, message_id, _summary_groups_title(chat_id, day), reply_markup=_summary_groups_menu(chat_id, day))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_group|"):
+            _, group, day_s = data.split("|", 2)
+            day = _parse_day(chat_id, day_s)
+            tours = _summary_tournaments_map(chat_id, group, day)
+            set_state(chat_id, "summary_group", {"group": group, "day": day.isoformat()})
+            tg_edit_message(chat_id, message_id, _summary_tournaments_title(chat_id, group, day), reply_markup=_summary_tournaments_menu(chat_id, group, day))
+            if not tours:
+                tg_answer_callback_query(cq_id, f"На {_day_label(chat_id, day)} главных турниров не найдено", show_alert=True)
+            else:
+                tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_tour|"):
+            _, group, day_s, idx_s = data.split("|", 3)
+            day = _parse_day(chat_id, day_s)
+            idx = int(idx_s) - 1
+            tours = _summary_tournaments_map(chat_id, group, day)
+            if idx < 0 or idx >= len(tours):
+                tg_answer_callback_query(cq_id, "Турнир не найден", show_alert=True)
+                return
+            item = tours[idx]
+            set_state(
+                chat_id,
+                "summary_tournament",
+                {
+                    "group": group,
+                    "day": day.isoformat(),
+                    "idx": idx + 1,
+                    "tournament_name": item.get("tournament_name") or "",
+                    "tournament_status": item.get("tournament_status") or "",
+                },
+            )
+            tg_edit_message(
+                chat_id,
+                message_id,
+                _summary_tournament_title(chat_id, group, day, item),
+                reply_markup=_summary_tournament_menu(group, day, idx + 1),
+            )
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_publish|"):
+            _, group, day_s, idx_s = data.split("|", 3)
+            day = _parse_day(chat_id, day_s)
+            idx = int(idx_s) - 1
+            tours = _summary_tournaments_map(chat_id, group, day)
+            if idx < 0 or idx >= len(tours):
+                tg_answer_callback_query(cq_id, "Турнир не найден", show_alert=True)
+                return
+            item = tours[idx]
+            if not item.get("all_finished"):
+                tg_answer_callback_query(cq_id, "Не все матчи этого турнира завершены", show_alert=True)
+                return
+            text, status, stage = build_daily_summary_for_tournament(
+                day,
+                _load_events_for_chat(chat_id, day),
+                group,
+                str(item.get("tournament_name") or ""),
+                str(item.get("tournament_status") or ""),
+            )
+            if not text:
+                tg_answer_callback_query(cq_id, "Не получилось собрать текст итогов", show_alert=True)
+                return
+            if tg_send_message(_publish_chat_id(chat_id), text):
+                mark_daily_summary_for_tournament(day, group, str(item.get("tournament_name") or ""), status, stage)
+                tg_answer_callback_query(cq_id, "Итоги отправлены")
+            else:
+                tg_answer_callback_query(cq_id, "Не смог отправить итоги", show_alert=True)
             return
 
         if data == "menu|mine":

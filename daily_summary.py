@@ -429,6 +429,66 @@ def _target_groups(events: List[Dict[str, Any]]) -> Iterable[tuple[str, str, str
         yield group, tournament, status, rows
 
 
+def _target_sort_key(group: str, tournament: str, status: str, rows: List[Dict[str, Any]]) -> tuple[int, str, str, str]:
+    ranks: List[int] = []
+    for event in rows:
+        try:
+            ranks.append(int(event.get("tournament_sort_rank", 9)))
+        except Exception:
+            pass
+    rank = min(ranks) if ranks else 9
+    return rank, group or "", status or "", tournament or ""
+
+
+def summary_tournaments_for_menu(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    odds_map = get_match_odds_map([int(event["event_id"]) for event in events if event.get("event_id")])
+    items: List[Dict[str, Any]] = []
+    for group, tournament, status, rows in _target_groups(events):
+        finished = sum(1 for event in rows if ss.is_finished(event))
+        live = sum(1 for event in rows if str(event.get("status_type") or "").lower() in {"inprogress", "live"})
+        items.append(
+            {
+                "tour_group": group,
+                "tournament_name": tournament,
+                "tournament_status": status,
+                "matches_count": len(rows),
+                "finished_count": finished,
+                "live_count": live,
+                "has_odds": any(odds_map.get(int(event["event_id"])) for event in rows if event.get("event_id")),
+                "all_finished": bool(rows) and finished == len(rows),
+                "sort_key": _target_sort_key(group, tournament, status, rows),
+            }
+        )
+    items.sort(key=lambda item: item["sort_key"])
+    return items
+
+
+def build_daily_summary_for_tournament(
+    day: dt.date,
+    events: List[Dict[str, Any]],
+    group: str,
+    tournament: str,
+    status: str = "",
+) -> tuple[str, str, str]:
+    rows = [
+        event
+        for event in events
+        if _is_target_event(event)
+        and str(event.get("tour_group") or "") == str(group or "")
+        and str(event.get("tournament_name") or "") == str(tournament or "")
+        and (not status or str(event.get("tournament_status") or "") == str(status or ""))
+    ]
+    if not rows:
+        return "", "", ""
+    stage = _common_stage(rows)
+    odds_map = get_match_odds_map([int(event["event_id"]) for event in rows if event.get("event_id")])
+    return _build_summary_text(day, group, tournament, stage, rows, odds_map), status or "", stage
+
+
+def mark_daily_summary_for_tournament(day: dt.date, group: str, tournament: str, status: str, stage: str) -> None:
+    mark_daily_summary_sent(_summary_key(day, group, tournament, status, stage), day, group, tournament, status, stage)
+
+
 def publish_daily_summaries(day: dt.date, events: List[Dict[str, Any]], bot_token: str, chat_id: int | str) -> int:
     if not enabled() or not bot_token or not chat_id:
         return 0
