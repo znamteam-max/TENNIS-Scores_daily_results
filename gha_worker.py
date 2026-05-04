@@ -11,6 +11,7 @@ import urllib.request
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
+from daily_summary import cache_match_odds, publish_daily_summaries
 from db_pg import (
     ensure_schema,
     list_pending_match_watch_days,
@@ -212,6 +213,7 @@ async def run_once() -> dict[str, Any]:
         events = ss.normalize_events(data)
         fallback_events = ss.normalize_events(sofascore_data) + ss.normalize_events(espn_data)
         events_by_id = {int(e["event_id"]): e for e in events}
+        odds_saved = await cache_match_odds(day, events)
 
         pending = list_pending_match_watches(day)
         sources.append(
@@ -221,6 +223,7 @@ async def run_once() -> dict[str, Any]:
                 "sofascore": len((sofascore_data or {}).get("events", []) or []),
                 "espn": len((espn_data or {}).get("events", []) or []),
                 "pending": len(pending),
+                "odds_saved": odds_saved,
             }
         )
         published_events: set[tuple[dt.date, int]] = set()
@@ -268,6 +271,10 @@ async def run_once() -> dict[str, Any]:
                         sent += 1
                 elif mark_match_notified(source_chat_id, day, int(watch["event_id"])):
                     sent += 1
+
+        summary_sent = publish_daily_summaries(day, events, BOT_TOKEN, PUBLISH_CHAT_ID)
+        if summary_sent:
+            print(f"[OK] daily summaries sent={summary_sent} day={day}")
 
     print(f"[OK] result notifications sent={sent}")
     return {"sent": sent, "sources": sources}

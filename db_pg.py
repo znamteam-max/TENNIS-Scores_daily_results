@@ -76,6 +76,31 @@ def ensure_schema() -> None:
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
     );
+
+    create table if not exists match_odds (
+        event_id bigint primary key,
+        day date not null,
+        home_odds double precision,
+        away_odds double precision,
+        source text not null default 'unknown',
+        raw jsonb not null default '{}'::jsonb,
+        fetched_at timestamptz not null default now()
+    );
+
+    create table if not exists odds_refreshes (
+        day date primary key,
+        refreshed_at timestamptz not null default now()
+    );
+
+    create table if not exists daily_summaries (
+        summary_key text primary key,
+        day date not null,
+        tour_group text not null,
+        tournament_name text not null,
+        tournament_status text not null,
+        stage text not null default '',
+        sent_at timestamptz not null default now()
+    );
     """
     with _conn() as con, con.cursor() as cur:
         cur.execute(sql)
@@ -449,3 +474,96 @@ def update_result_card(chat_id: int, card_id: str, event: Dict[str, Any]) -> boo
             (json.dumps(event, ensure_ascii=False), int(chat_id), (card_id or "").strip()),
         )
         return cur.rowcount > 0
+
+
+def odds_refresh_due(day: dt.date, min_age_minutes: int) -> bool:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute("select refreshed_at from odds_refreshes where day=%s", (day,))
+        row = cur.fetchone()
+        if not row:
+            return True
+        cur.execute("select now() - %s > (%s || ' minutes')::interval", (row[0], int(min_age_minutes)))
+        due = cur.fetchone()
+        return bool(due and due[0])
+
+
+def mark_odds_refresh(day: dt.date) -> None:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            insert into odds_refreshes (day, refreshed_at)
+            values (%s, now())
+            on conflict (day) do update set refreshed_at=now()
+            """,
+            (day,),
+        )
+
+
+def upsert_match_odds(event_id: int, day: dt.date, home_odds: float, away_odds: float, source: str, raw: Dict[str, Any]) -> None:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            insert into match_odds (event_id, day, home_odds, away_odds, source, raw, fetched_at)
+            values (%s, %s, %s, %s, %s, %s::jsonb, now())
+            on conflict (event_id) do update
+            set day=excluded.day,
+                home_odds=excluded.home_odds,
+                away_odds=excluded.away_odds,
+                source=excluded.source,
+                raw=excluded.raw,
+                fetched_at=now()
+            """,
+            (int(event_id), day, float(home_odds), float(away_odds), source, json.dumps(raw, ensure_ascii=False)),
+        )
+
+
+def get_match_odds_map(event_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    ids = [int(x) for x in event_ids if x is not None]
+    if not ids:
+        return {}
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            select event_id, home_odds, away_odds, source, raw, fetched_at
+            from match_odds
+            where event_id = any(%s::bigint[])
+            """,
+            (ids,),
+        )
+        return {
+            int(row[0]): {
+                "home_odds": row[1],
+                "away_odds": row[2],
+                "source": row[3],
+                "raw": row[4] or {},
+                "fetched_at": row[5],
+            }
+            for row in cur.fetchall()
+        }
+
+
+def is_daily_summary_sent(summary_key: str) -> bool:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute("select 1 from daily_summaries where summary_key=%s", ((summary_key or "").strip(),))
+        return cur.fetchone() is not None
+
+
+def mark_daily_summary_sent(summary_key: str, day: dt.date, tour_group: str, tournament_name: str, tournament_status: str, stage: str) -> None:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            insert into daily_summaries (
+                summary_key, day, tour_group, tournament_name, tournament_status, stage, sent_at
+            )
+            values (%s, %s, %s, %s, %s, %s, now())
+            on conflict (summary_key) do nothing
+            """,
+            (
+                (summary_key or "").strip(),
+                day,
+                tour_group or "",
+                tournament_name or "",
+                tournament_status or "",
+                stage or "",
+            ),
+        )

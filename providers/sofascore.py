@@ -342,6 +342,8 @@ def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optiona
     league_name = league.get("ZA") or league.get("ZAF") or ""
     category = _league_category(league_name)
     tournament = _tournament_from_league(league_name)
+    home_countries = [x for x in (fields.get("FU"), fields.get("FW")) if x]
+    away_countries = [x for x in (fields.get("FV"), fields.get("FX")) if x]
     event: Dict[str, Any] = {
         "id": _stable_id("flashscore", match_id),
         "customId": match_id,
@@ -354,8 +356,20 @@ def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optiona
             "category": {"name": category, "slug": category.lower()},
         },
         "season": {"name": league.get("ZAF") or league_name},
-        "homeCompetitor": {"name": _clean(fields.get("AE") or "TBD")},
-        "awayCompetitor": {"name": _clean(fields.get("AF") or "TBD")},
+        "homeCompetitor": {
+            "name": _clean(fields.get("AE") or "TBD"),
+            "shortName": _clean(fields.get("FH") or fields.get("AE") or "TBD"),
+            "slug": fields.get("WU") or "",
+            "country": home_countries[0] if home_countries else "",
+            "countries": home_countries,
+        },
+        "awayCompetitor": {
+            "name": _clean(fields.get("AF") or "TBD"),
+            "shortName": _clean(fields.get("FK") or fields.get("AF") or "TBD"),
+            "slug": fields.get("WV") or "",
+            "country": away_countries[0] if away_countries else "",
+            "countries": away_countries,
+        },
         "startTimestamp": int(fields["AD"]) if str(fields.get("AD") or "").isdigit() else None,
         "status": {"type": _status(fields), "detail": fields.get("AM") or ""},
         "homeScore": _score(fields, "home"),
