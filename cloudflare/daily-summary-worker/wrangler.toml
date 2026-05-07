@@ -1,0 +1,17 @@
+name = "tennis-daily-summary-worker"
+main = "src/index.js"
+compatibility_date = "2026-05-07"
+
+[observability]
+enabled = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+APP_TZ = "Europe/Helsinki"
+ODDS_API_REGIONS = "eu"
+ODDS_API_MARKETS = "h2h"
+ODDS_REFRESH_MINUTES = "30"
+SUMMARY_REQUIRE_ODDS = "1"
+SUMMARY_PICKEM_MARGIN = "0.08"
