@@ -1,4 +1,4 @@
-name = "tennis-daily-summary-worker"
+name = "tennis-daily-results"
 main = "src/index.js"
 compatibility_date = "2026-05-07"
 
