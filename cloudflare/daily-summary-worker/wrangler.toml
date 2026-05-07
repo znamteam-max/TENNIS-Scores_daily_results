@@ -5,9 +5,6 @@ compatibility_date = "2026-05-07"
 [observability]
 enabled = true
 
-[triggers]
-crons = ["* * * * *"]
-
 [vars]
 APP_TZ = "Europe/Helsinki"
 ODDS_API_REGIONS = "eu"
