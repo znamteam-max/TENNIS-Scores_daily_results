@@ -174,18 +174,30 @@ export default {
     if (url.pathname === "/health") {
       return json({ ok: true, service: "tennis-daily-summary-worker" });
     }
+    if (url.pathname === "/diag") {
+      return json({
+        ok: true,
+        service: "tennis-daily-summary-worker",
+        env: envShape(env),
+      });
+    }
     if (url.pathname === "/run") {
       if (!isAuthorized(request, url, env)) {
         return json({ ok: false, error: "unauthorized" }, 401);
       }
-      const day = url.searchParams.get("day") || "";
-      const result = await runDailySummary(env, day ? { days: [day] } : {});
-      return json({ ok: true, ...result });
+      try {
+        const day = url.searchParams.get("day") || "";
+        const result = await runDailySummary(env, day ? { days: [day] } : {});
+        return json({ ok: true, ...result });
+      } catch (error) {
+        console.log(`[run] failed: ${error?.stack || error?.message || error}`);
+        return json({ ok: false, error: error?.message || String(error) }, 500);
+      }
     }
     return json({
       ok: true,
       service: "tennis-daily-summary-worker",
-      routes: ["/health", "/run?day=YYYY-MM-DD&secret=CRON_SECRET"],
+      routes: ["/health", "/diag", "/run?day=YYYY-MM-DD&secret=CRON_SECRET"],
     });
   },
 
@@ -947,9 +959,31 @@ function requiresOdds(env) {
 
 function isAuthorized(request, url, env) {
   if (!env.CRON_SECRET) {
-    return true;
+    return false;
   }
   return request.headers.get("x-cron-secret") === env.CRON_SECRET || url.searchParams.get("secret") === env.CRON_SECRET;
+}
+
+function envShape(env) {
+  const keys = [
+    "DATABASE_URL",
+    "POSTGRES_URL",
+    "TELEGRAM_BOT_TOKEN",
+    "PUBLISH_CHAT_ID",
+    "SUMMARY_CHAT_ID",
+    "ODDS_API_KEY",
+    "CRON_SECRET",
+    "APP_TZ",
+  ];
+  return Object.fromEntries(
+    keys.map((key) => [
+      key,
+      {
+        present: Boolean(env[key]),
+        length: env[key] ? String(env[key]).length : 0,
+      },
+    ]),
+  );
 }
 
 function json(value, status = 200) {
