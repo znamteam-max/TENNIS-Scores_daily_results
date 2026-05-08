@@ -21,7 +21,7 @@ from db_pg import (
     upsert_match_odds,
 )
 from match_card import FLASHSCORE_BASE, _normalize_stage
-from providers import odds_api
+from providers import flashscore_odds, odds_api
 from providers import sofascore as ss
 
 
@@ -55,9 +55,18 @@ RUSSIAN_NAME_HINTS = {
 
 def enabled() -> bool:
     value = os.getenv("SUMMARY_ENABLED")
-    if value is None:
+    if value is not None:
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    source = _odds_source()
+    if source in {"0", "false", "no", "off", "none"}:
+        return False
+    if source == "odds_api":
         return odds_api.enabled()
-    return value.strip().lower() not in {"0", "false", "no", "off"}
+    return flashscore_odds.enabled()
+
+
+def _odds_source() -> str:
+    return (os.getenv("SUMMARY_ODDS_SOURCE") or "flashscore").strip().lower().replace("-", "_")
 
 
 def _requires_odds() -> bool:
@@ -164,6 +173,53 @@ def _match_odds_item(event: Dict[str, Any], odds_items: List[Dict[str, Any]]) ->
 
 
 async def cache_match_odds(day: dt.date, events: List[Dict[str, Any]]) -> int:
+    if _odds_source() == "odds_api":
+        return await _cache_odds_api(day, events)
+    return await _cache_flashscore_odds(day, events)
+
+
+async def _cache_flashscore_odds(day: dt.date, events: List[Dict[str, Any]]) -> int:
+    if not flashscore_odds.enabled():
+        return 0
+    event_ids = [int(event["event_id"]) for event in events if event.get("event_id")]
+    existing = get_match_odds_map(event_ids)
+    target_events = [
+        event
+        for event in events
+        if _is_target_event(event)
+        and ss.is_finished(event)
+        and event.get("event_id")
+        and int(event["event_id"]) not in existing
+    ]
+    if not target_events:
+        return 0
+
+    refresh_minutes = int(os.getenv("FLASHSCORE_ODDS_REFRESH_MINUTES") or os.getenv("ODDS_REFRESH_MINUTES") or "30")
+    if not odds_refresh_due(day, refresh_minutes):
+        return 0
+
+    odds_map = await flashscore_odds.odds_for_events(target_events)
+    saved = 0
+    for event in target_events:
+        event_id = int(event["event_id"])
+        odds = odds_map.get(event_id)
+        if not odds:
+            continue
+        upsert_match_odds(
+            event_id,
+            day,
+            float(odds["home_odds"]),
+            float(odds["away_odds"]),
+            str(odds.get("source") or "flashscore"),
+            odds.get("raw") or {},
+        )
+        saved += 1
+    mark_odds_refresh(day)
+    print(f"[summary] flashscore odds cached day={day} saved={saved} target_events={len(target_events)}")
+    return saved
+
+
+async def _cache_odds_api(day: dt.date, events: List[Dict[str, Any]]) -> int:
     if not odds_api.enabled():
         return 0
     refresh_minutes = int(os.getenv("ODDS_REFRESH_MINUTES") or "30")
