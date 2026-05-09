@@ -1,0 +1,7 @@
+name = "tennis-daily-results"
+main = "src/index.js"
+compatibility_date = "2025-05-08"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["*/30 * * * *"]
