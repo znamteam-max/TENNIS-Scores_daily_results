@@ -1,7 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 
-const TARGET_RANKS = new Set([0, 1, 2, 3, 4]);
-const TARGET_CATEGORIES = new Set(["ATP", "WTA", "Challenger"]);
+const TARGET_RANKS = new Set([0, 1, 2, 3]);
+const TARGET_CATEGORIES = new Set(["ATP"]);
 
 const GRAND_SLAM_TOURNAMENTS = [
   "australian open",
@@ -735,7 +735,6 @@ async function publishDailySummaries(sql, env, day, events) {
 
   const oddsMap = await getOddsMap(sql, day);
   const groups = targetGroups(events);
-  const isPastDay = day < localDate(env.APP_TZ || "Europe/Helsinki");
   let sent = 0;
   for (const item of groups) {
     const { group, tournament, status, rows } = item;
@@ -743,7 +742,7 @@ async function publishDailySummaries(sql, env, day, events) {
     if (!resultRows.length) {
       continue;
     }
-    if (!isPastDay && !rows.every(isFinished)) {
+    if (!rows.every(isFinished)) {
       continue;
     }
     if (requiresOdds(env) && resultRows.some((event) => {
@@ -758,6 +757,9 @@ async function publishDailySummaries(sql, env, day, events) {
     if (await isDailySummarySent(sql, key)) {
       continue;
     }
+    if (await isSummaryReviewPending(sql, day, group, tournament, status, stage)) {
+      continue;
+    }
 
     const text = buildSummaryText(env, group, tournament, stage, resultRows, oddsMap);
     if (!text) {
@@ -765,11 +767,10 @@ async function publishDailySummaries(sql, env, day, events) {
     }
     const summaryId = summaryReviewId();
     await saveSummaryReview(sql, summaryId, chatId, day, group, tournament, status, stage, resultRows);
-    const response = await sendTelegramMessage(token, chatId, text, summaryReviewMenu(summaryId));
+    const response = await sendTelegramMessage(token, chatId, summaryApprovalText(day, tournament, status, resultRows.length), summaryApprovalMenu(summaryId));
     const messageId = response?.result?.message_id;
     if (messageId) {
       await setSummaryReviewMessage(sql, summaryId, messageId);
-      await markDailySummarySent(sql, key, day, group, tournament, status, stage);
       sent += 1;
     }
   }
@@ -805,6 +806,21 @@ async function isDailySummarySent(sql, key) {
   return rows.length > 0;
 }
 
+async function isSummaryReviewPending(sql, day, group, tournament, status, stage) {
+  const rows = await sql`
+    select 1
+    from summary_reviews
+    where day = ${day}
+      and tour_group = ${group || ""}
+      and tournament_name = ${tournament || ""}
+      and tournament_status = ${status || ""}
+      and stage = ${stage || ""}
+      and message_id is not null
+    limit 1
+  `;
+  return rows.length > 0;
+}
+
 async function markDailySummarySent(sql, key, day, group, tournament, status, stage) {
   await sql`
     insert into daily_summaries (summary_key, day, tour_group, tournament_name, tournament_status, stage, sent_at)
@@ -823,6 +839,22 @@ function summaryReviewMenu(summaryId) {
       [{ text: "\u270F\uFE0F \u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0438\u0442\u043e\u0433", callback_data: `sum_edit|${summaryId}` }]
     ]
   };
+}
+
+function summaryApprovalMenu(summaryId) {
+  return {
+    inline_keyboard: [
+      [
+        { text: "\u041e\u043f\u0443\u0431\u043b\u0438\u043a\u043e\u0432\u0430\u0442\u044c", callback_data: `auto_sum_publish|${summaryId}` },
+        { text: "\u041d\u0435 \u043f\u0443\u0431\u043b\u0438\u043a\u043e\u0432\u0430\u0442\u044c", callback_data: `auto_sum_skip|${summaryId}` }
+      ]
+    ]
+  };
+}
+
+function summaryApprovalText(day, tournament, status, matchesCount) {
+  const title = [status, tournament].filter(Boolean).join(" · ");
+  return `\u0417\u0430\u043a\u043e\u043d\u0447\u0438\u043b\u0441\u044f \u0434\u0435\u043d\u044c ${day} \u043d\u0430 \u0442\u0443\u0440\u043d\u0438\u0440\u0435 ${title}.\n\u0421\u044b\u0433\u0440\u0430\u043d\u043e \u043c\u0430\u0442\u0447\u0435\u0439: ${matchesCount}.\n\u041e\u043f\u0443\u0431\u043b\u0438\u043a\u043e\u0432\u0430\u0442\u044c \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b?`;
 }
 
 async function saveSummaryReview(sql, summaryId, chatId, day, group, tournament, status, stage, events) {
