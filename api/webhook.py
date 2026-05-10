@@ -442,15 +442,13 @@ def _tour_groups_menu(chat_id: int) -> Dict[str, Any]:
 
 def _schedule_dates_menu(chat_id: int) -> Dict[str, Any]:
     today = _today(chat_id)
-    tomorrow = today + dt.timedelta(days=1)
     yesterday = today - dt.timedelta(days=1)
     return _kb(
         [
             [
                 _btn("Сегодня", f"sched_date|{today.isoformat()}"),
-                _btn("Завтра", f"sched_date|{tomorrow.isoformat()}"),
+                _btn("Вчера", f"sched_date|{yesterday.isoformat()}"),
             ],
-            [_btn("Вчера", f"sched_date|{yesterday.isoformat()}")],
             [_btn("Назад", "menu|root")],
         ]
     )
@@ -485,14 +483,12 @@ def _tournaments_title(chat_id: int, group: str, day: dt.date) -> str:
 def _date_nav_buttons(chat_id: int, group: str, day: dt.date) -> List[Dict[str, str]]:
     today = _today(chat_id)
     prev_day = day - dt.timedelta(days=1)
-    next_day = day + dt.timedelta(days=1)
     today_button = _btn("Сегодня", f"date|{group}|{today.isoformat()}")
     if day == today:
         today_button = _btn("Сегодня ✓", "noop")
     return [
         _btn("← День назад", f"date|{group}|{prev_day.isoformat()}"),
         today_button,
-        _btn("День вперед →", f"date|{group}|{next_day.isoformat()}"),
     ]
 
 
@@ -595,6 +591,18 @@ def _summary_tournament_menu(group: str, day: dt.date, idx: int) -> Dict[str, An
             [_btn("Опубликовать итог дня", f"sum_publish|{group}|{day.isoformat()}|{idx}")],
             [_btn("К турнирам", f"sum_group|{group}|{day.isoformat()}")],
             [_btn("В начало", "menu|root")],
+        ]
+    )
+
+
+def _summary_publish_confirm_menu(group: str, day: dt.date, idx: int) -> Dict[str, Any]:
+    return _kb(
+        [
+            [
+                _btn("Да, опубликовать", f"sum_publish_force|{group}|{day.isoformat()}|{idx}"),
+                _btn("Нет", f"sum_tour|{group}|{day.isoformat()}|{idx}"),
+            ],
+            [_btn("К турнирам", f"sum_group|{group}|{day.isoformat()}")],
         ]
     )
 
@@ -937,7 +945,7 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             set_state(chat_id, "summary_group", {"group": group, "day": day.isoformat()})
             tg_edit_message(chat_id, message_id, _summary_tournaments_title(chat_id, group, day), reply_markup=_summary_tournaments_menu(chat_id, group, day))
             if not tours:
-                tg_answer_callback_query(cq_id, f"На {_day_label(chat_id, day)} главных турниров не найдено", show_alert=True)
+                tg_answer_callback_query(cq_id, f"На {_day_label(chat_id, day)} турниров для итогов не найдено", show_alert=True)
             else:
                 tg_answer_callback_query(cq_id)
             return
@@ -971,8 +979,9 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             tg_answer_callback_query(cq_id)
             return
 
-        if data.startswith("sum_publish|"):
+        if data.startswith("sum_publish|") or data.startswith("sum_publish_force|"):
             _, group, day_s, idx_s = data.split("|", 3)
+            force = data.startswith("sum_publish_force|")
             day = _parse_day(chat_id, day_s)
             idx = int(idx_s) - 1
             tours = _summary_tournaments_map(chat_id, group, day)
@@ -980,8 +989,21 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
                 tg_answer_callback_query(cq_id, "Турнир не найден", show_alert=True)
                 return
             item = tours[idx]
-            if not item.get("all_finished"):
-                tg_answer_callback_query(cq_id, "Не все матчи этого турнира завершены", show_alert=True)
+            if not item.get("all_finished") and not force:
+                total = int(item.get("matches_count") or 0)
+                finished = int(item.get("finished_count") or 0)
+                unfinished = max(0, total - finished)
+                tg_edit_message(
+                    chat_id,
+                    message_id,
+                    (
+                        "Не все матчи этого турнира завершены.\n"
+                        f"Завершено: {finished}/{total}, еще не завершено: {unfinished}.\n\n"
+                        "Все равно опубликовать итоги по уже завершенным матчам?"
+                    ),
+                    reply_markup=_summary_publish_confirm_menu(group, day, idx + 1),
+                )
+                tg_answer_callback_query(cq_id)
                 return
             text, status, stage = build_daily_summary_for_tournament(
                 day,
