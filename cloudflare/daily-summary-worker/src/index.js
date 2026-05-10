@@ -805,17 +805,18 @@ function buildSummaryText(env, group, tournament, stage, events, oddsMap) {
     if (!line) {
       continue;
     }
-    const category = categoryFor(env, event, oddsMap.get(event.event_id));
-    buckets[category].push(line);
+    const odds = oddsMap.get(event.event_id);
+    const category = categoryFor(env, event, odds);
+    buckets[category].push(category === "unexpected" ? lineWithAverageOdds(event, line, odds) : line);
   }
   if (!Object.values(buckets).some((rows) => rows.length)) {
     return "";
   }
 
   const sections = [
+    ["unexpected", "\u26A1 \u0421\u0435\u043d\u0441\u0430\u0446\u0438\u0438"],
     ["expected", "\u{1F44C}\u{1F3FB} \u041e\u0436\u0438\u0434\u0430\u0435\u043c\u043e"],
     ["pickem", "\u{1F7F0}\u041a\u043e\u0433\u0434\u0430 \u0448\u0430\u043d\u0441\u044b 50/50"],
-    ["unexpected", "\u26A1 \u041d\u0435\u043e\u0436\u0438\u0434\u0430\u043d\u043d\u043e"],
     ["sad", "\u{1F625}  \u0413\u0440\u0443\u0441\u0442\u043d\u043e"],
     ["no_odds", "\u0411\u0435\u0437 \u043a\u043e\u044d\u0444\u0444\u0438\u0446\u0438\u0435\u043d\u0442\u043e\u0432"]
   ];
@@ -863,6 +864,25 @@ function categoryFor(env, event, odds) {
   }
   const favorite = homeOdds < awayOdds ? "home" : "away";
   return winner === favorite ? "expected" : "unexpected";
+}
+
+function lineWithAverageOdds(event, line, odds) {
+  const winner = winnerSide(event);
+  if (!winner || !odds) {
+    return line;
+  }
+  const homeOdds = Number(odds.home_odds);
+  const awayOdds = Number(odds.away_odds);
+  if (!Number.isFinite(homeOdds) || !Number.isFinite(awayOdds) || homeOdds <= 0 || awayOdds <= 0) {
+    return line;
+  }
+  const winnerOdds = winner === "home" ? homeOdds : awayOdds;
+  const loserOdds = winner === "home" ? awayOdds : homeOdds;
+  return `${line} (\u0441\u0440. \u043a\u044d\u0444. ${formatOdds(winnerOdds)} vs ${formatOdds(loserOdds)})`;
+}
+
+function formatOdds(value) {
+  return Number(value).toFixed(2);
 }
 
 function resultLine(event) {
