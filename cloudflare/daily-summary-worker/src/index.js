@@ -187,7 +187,11 @@ export default {
       }
       try {
         const day = url.searchParams.get("day") || "";
-        const result = await runDailySummary(env, day ? { days: [day] } : {});
+        const forceOdds = ["1", "true", "yes", "on"].includes(String(url.searchParams.get("forceOdds") || url.searchParams.get("force") || "").toLowerCase());
+        const result = await runDailySummary(env, {
+          ...(day ? { days: [day] } : {}),
+          forceOdds
+        });
         return json({ ok: true, ...result });
       } catch (error) {
         console.log(`[run] failed: ${error?.stack || error?.message || error}`);
@@ -197,7 +201,7 @@ export default {
     return json({
       ok: true,
       service: "tennis-daily-summary-worker",
-      routes: ["/health", "/diag", "/run?day=YYYY-MM-DD&secret=CRON_SECRET"]
+      routes: ["/health", "/diag", "/run?day=YYYY-MM-DD&secret=CRON_SECRET", "/run?day=YYYY-MM-DD&forceOdds=1&secret=CRON_SECRET"]
     });
   },
 
@@ -220,7 +224,7 @@ async function runDailySummary(env, options = {}) {
     }
     const events = normalizeEvents(data);
     const targetEvents = events.filter(isTargetEvent);
-    const oddsSaved = await cacheMatchOdds(sql, env, day, targetEvents);
+    const oddsSaved = await cacheMatchOdds(sql, env, day, targetEvents, options);
     const summariesSent = await publishDailySummaries(sql, env, day, events);
     out.push({
       day,
@@ -295,38 +299,40 @@ async function markOddsRefresh(sql, day) {
   `;
 }
 
-async function cacheMatchOdds(sql, env, day, targetEvents) {
+async function cacheMatchOdds(sql, env, day, targetEvents, options = {}) {
   const source = String(env.SUMMARY_ODDS_SOURCE || "flashscore").toLowerCase().replace(/-/g, "_");
   if (["0", "false", "no", "off", "none"].includes(source)) {
     return 0;
   }
   if (source === "odds_api") {
-    return cacheMatchOddsFromOddsApi(sql, env, day, targetEvents);
+    return cacheMatchOddsFromOddsApi(sql, env, day, targetEvents, options);
   }
-  return cacheMatchOddsFromFlashscore(sql, env, day, targetEvents);
+  return cacheMatchOddsFromFlashscore(sql, env, day, targetEvents, options);
 }
 
-async function cacheMatchOddsFromFlashscore(sql, env, day, targetEvents) {
+async function cacheMatchOddsFromFlashscore(sql, env, day, targetEvents, options = {}) {
   if (isOff(env.FLASHSCORE_ODDS_ENABLED, "1")) {
     return 0;
   }
 
   const oddsMap = await getOddsMap(sql, day);
-  const eventsToFetch = targetEvents
+  const allEventsToFetch = targetEvents
     .filter((event) => isFinished(event))
     .filter((event) => resultLine(event))
     .filter((event) => flashscoreMatchId(event))
     .filter((event) => !oddsMap.has(event.event_id));
 
-  if (!eventsToFetch.length) {
+  if (!allEventsToFetch.length) {
     return 0;
   }
 
   const refreshMinutes = Number(env.FLASHSCORE_ODDS_REFRESH_MINUTES || env.ODDS_REFRESH_MINUTES || 30);
-  if (!(await oddsRefreshDue(sql, day, refreshMinutes))) {
+  if (!options.forceOdds && !(await oddsRefreshDue(sql, day, refreshMinutes))) {
     return 0;
   }
 
+  const fetchLimit = Math.max(1, Number(env.FLASHSCORE_ODDS_FETCH_LIMIT || 8));
+  const eventsToFetch = allEventsToFetch.slice(0, fetchLimit);
   const found = await flashscoreOddsForEvents(env, eventsToFetch);
   let saved = 0;
   for (const event of eventsToFetch) {
@@ -338,12 +344,14 @@ async function cacheMatchOddsFromFlashscore(sql, env, day, targetEvents) {
     saved += 1;
   }
 
-  await markOddsRefresh(sql, day);
-  console.log(`[summary] flashscore odds cached day=${day} saved=${saved} target_events=${eventsToFetch.length}`);
+  if (allEventsToFetch.length <= fetchLimit) {
+    await markOddsRefresh(sql, day);
+  }
+  console.log(`[summary] flashscore odds cached day=${day} saved=${saved} checked=${eventsToFetch.length} remaining=${Math.max(0, allEventsToFetch.length - eventsToFetch.length)}`);
   return saved;
 }
 
-async function cacheMatchOddsFromOddsApi(sql, env, day, targetEvents) {
+async function cacheMatchOddsFromOddsApi(sql, env, day, targetEvents, _options = {}) {
   if (!env.ODDS_API_KEY) {
     return 0;
   }
@@ -1183,6 +1191,7 @@ function envShape(env) {
     "SUMMARY_PICKEM_MARGIN",
     "FLASHSCORE_ODDS_ENABLED",
     "FLASHSCORE_ODDS_REFRESH_MINUTES",
+    "FLASHSCORE_ODDS_FETCH_LIMIT",
     "FLASHSCORE_BASE",
     "ODDS_API_KEY",
     "ODDS_API_MARKETS",
