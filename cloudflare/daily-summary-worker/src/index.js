@@ -718,13 +718,21 @@ async function publishDailySummaries(sql, env, day, events) {
 
   const oddsMap = await getOddsMap(sql, day);
   const groups = targetGroups(events);
+  const isPastDay = day < localDate(env.APP_TZ || "Europe/Helsinki");
   let sent = 0;
   for (const item of groups) {
     const { group, tournament, status, rows } = item;
-    if (!rows.length || !rows.every(isFinished)) {
+    const resultRows = rows.filter((event) => resultLine(event));
+    if (!resultRows.length) {
       continue;
     }
-    if (requiresOdds(env) && !rows.some((event) => oddsMap.has(event.event_id))) {
+    if (!isPastDay && !rows.every(isFinished)) {
+      continue;
+    }
+    if (requiresOdds(env) && resultRows.some((event) => {
+      const odds = oddsMap.get(event.event_id);
+      return !odds?.home_odds || !odds?.away_odds;
+    })) {
       continue;
     }
 
@@ -734,7 +742,7 @@ async function publishDailySummaries(sql, env, day, events) {
       continue;
     }
 
-    const text = buildSummaryText(env, group, tournament, stage, rows, oddsMap);
+    const text = buildSummaryText(env, group, tournament, stage, resultRows, oddsMap);
     if (!text) {
       continue;
     }
