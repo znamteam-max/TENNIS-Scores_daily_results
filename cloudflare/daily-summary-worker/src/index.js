@@ -249,6 +249,29 @@ async function debugDay(sql, day, events, targetEvents) {
   const withResultLine = finished.filter((event) => resultLine(event));
   const withFlashscoreId = withResultLine.filter((event) => flashscoreMatchId(event));
   const missingOdds = withFlashscoreId.filter((event) => !oddsMap.has(event.event_id));
+  const groups = await Promise.all(targetGroups(events).map(async (item) => {
+    const { group, tournament, status, rows } = item;
+    const stage = commonStage(rows);
+    const key = summaryKey(day, group, tournament, status, stage);
+    const lineRows = rows.filter((event) => resultLine(event));
+    const usableOddsRows = rows.filter((event) => {
+      const odds = oddsMap.get(event.event_id);
+      return odds?.home_odds && odds?.away_odds;
+    });
+    return {
+      group,
+      tournament,
+      status,
+      stage,
+      rows: rows.length,
+      finishedRows: rows.filter(isFinished).length,
+      allFinished: rows.length > 0 && rows.every(isFinished),
+      resultLineRows: lineRows.length,
+      oddsRows: rows.filter((event) => oddsMap.has(event.event_id)).length,
+      usableOddsRows: usableOddsRows.length,
+      alreadySent: await isDailySummarySent(sql, key)
+    };
+  }));
   return {
     events: events.length,
     targetEvents: targetEvents.length,
@@ -260,6 +283,7 @@ async function debugDay(sql, day, events, targetEvents) {
     oddsRows: oddsMap.size,
     usableOddsRows: [...oddsMap.values()].filter((row) => row?.home_odds && row?.away_odds).length,
     missingFlashscoreOdds: missingOdds.length,
+    groups,
     samples: targetEvents.slice(0, 12).map((event) => ({
       event_id: event.event_id,
       custom_id: event.custom_id || "",
