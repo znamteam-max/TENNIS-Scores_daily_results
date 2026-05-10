@@ -6,146 +6,146 @@ const TARGET_CATEGORIES = new Set(["ATP", "WTA"]);
 const GRAND_SLAM_TOURNAMENTS = [
   "australian open",
   "open australia",
-  "открытый чемпионат австралии",
-  "австралия open",
+  "\u043e\u0442\u043a\u0440\u044b\u0442\u044b\u0439 \u0447\u0435\u043c\u043f\u0438\u043e\u043d\u0430\u0442 \u0430\u0432\u0441\u0442\u0440\u0430\u043b\u0438\u0438",
+  "\u0430\u0432\u0441\u0442\u0440\u0430\u043b\u0438\u044f open",
   "roland garros",
   "french open",
-  "ролан гаррос",
+  "\u0440\u043e\u043b\u0430\u043d \u0433\u0430\u0440\u0440\u043e\u0441",
   "wimbledon",
-  "уимблдон",
+  "\u0443\u0438\u043c\u0431\u043b\u0434\u043e\u043d",
   "us open",
-  "открытый чемпионат сша",
+  "\u043e\u0442\u043a\u0440\u044b\u0442\u044b\u0439 \u0447\u0435\u043c\u043f\u0438\u043e\u043d\u0430\u0442 \u0441\u0448\u0430"
 ];
 
 const COMMON_1000_TOURNAMENTS = [
   "indian wells",
-  "индиан-уэллс",
-  "индиан уэллс",
+  "\u0438\u043d\u0434\u0438\u0430\u043d-\u0443\u044d\u043b\u043b\u0441",
+  "\u0438\u043d\u0434\u0438\u0430\u043d \u0443\u044d\u043b\u043b\u0441",
   "miami",
-  "майами",
+  "\u043c\u0430\u0439\u0430\u043c\u0438",
   "madrid",
-  "мадрид",
+  "\u043c\u0430\u0434\u0440\u0438\u0434",
   "rome",
-  "рим",
+  "\u0440\u0438\u043c",
   "canada",
   "canadian open",
   "toronto",
-  "торонто",
+  "\u0442\u043e\u0440\u043e\u043d\u0442\u043e",
   "montreal",
-  "монреаль",
+  "\u043c\u043e\u043d\u0440\u0435\u0430\u043b\u044c",
   "cincinnati",
-  "цинциннати",
+  "\u0446\u0438\u043d\u0446\u0438\u043d\u043d\u0430\u0442\u0438"
 ];
 
 const ATP_1000_TOURNAMENTS = [
   "monte carlo",
-  "монте-карло",
-  "монте карло",
+  "\u043c\u043e\u043d\u0442\u0435-\u043a\u0430\u0440\u043b\u043e",
+  "\u043c\u043e\u043d\u0442\u0435 \u043a\u0430\u0440\u043b\u043e",
   "shanghai",
-  "шанхай",
+  "\u0448\u0430\u043d\u0445\u0430\u0439",
   "paris",
-  "париж",
+  "\u043f\u0430\u0440\u0438\u0436"
 ];
 
 const WTA_1000_TOURNAMENTS = [
   "doha",
-  "доха",
+  "\u0434\u043e\u0445\u0430",
   "dubai",
-  "дубай",
+  "\u0434\u0443\u0431\u0430\u0439",
   "beijing",
-  "пекин",
+  "\u043f\u0435\u043a\u0438\u043d",
   "wuhan",
-  "ухань",
+  "\u0443\u0445\u0430\u043d\u044c"
 ];
 
 const ATP_500_TOURNAMENTS = [
   "rotterdam",
-  "роттердам",
+  "\u0440\u043e\u0442\u0442\u0435\u0440\u0434\u0430\u043c",
   "doha",
-  "доха",
+  "\u0434\u043e\u0445\u0430",
   "dubai",
-  "дубай",
+  "\u0434\u0443\u0431\u0430\u0439",
   "rio de janeiro",
-  "рио-де-жанейро",
+  "\u0440\u0438\u043e-\u0434\u0435-\u0436\u0430\u043d\u0435\u0439\u0440\u043e",
   "acapulco",
-  "акапулько",
+  "\u0430\u043a\u0430\u043f\u0443\u043b\u044c\u043a\u043e",
   "barcelona",
-  "барселона",
+  "\u0431\u0430\u0440\u0441\u0435\u043b\u043e\u043d\u0430",
   "queens",
   "queen's",
-  "лондон",
+  "\u043b\u043e\u043d\u0434\u043e\u043d",
   "halle",
-  "халле",
+  "\u0445\u0430\u043b\u043b\u0435",
   "washington",
-  "вашингтон",
+  "\u0432\u0430\u0448\u0438\u043d\u0433\u0442\u043e\u043d",
   "beijing",
-  "пекин",
+  "\u043f\u0435\u043a\u0438\u043d",
   "tokyo",
-  "токио",
+  "\u0442\u043e\u043a\u0438\u043e",
   "basel",
-  "базель",
+  "\u0431\u0430\u0437\u0435\u043b\u044c",
   "vienna",
-  "вена",
+  "\u0432\u0435\u043d\u0430",
   "hamburg",
-  "гамбург",
+  "\u0433\u0430\u043c\u0431\u0443\u0440\u0433",
   "dallas",
-  "даллас",
+  "\u0434\u0430\u043b\u043b\u0430\u0441"
 ];
 
 const WTA_500_TOURNAMENTS = [
   "brisbane",
-  "брисбен",
+  "\u0431\u0440\u0438\u0441\u0431\u0435\u043d",
   "adelaide",
-  "аделаида",
+  "\u0430\u0434\u0435\u043b\u0430\u0438\u0434\u0430",
   "abu dhabi",
-  "абу-даби",
+  "\u0430\u0431\u0443-\u0434\u0430\u0431\u0438",
   "linz",
-  "линц",
+  "\u043b\u0438\u043d\u0446",
   "stuttgart",
-  "штутгарт",
+  "\u0448\u0442\u0443\u0442\u0433\u0430\u0440\u0442",
   "charleston",
-  "чарльстон",
+  "\u0447\u0430\u0440\u043b\u044c\u0441\u0442\u043e\u043d",
   "strasbourg",
-  "страсбург",
+  "\u0441\u0442\u0440\u0430\u0441\u0431\u0443\u0440\u0433",
   "berlin",
-  "берлин",
+  "\u0431\u0435\u0440\u043b\u0438\u043d",
   "bad homburg",
-  "бад-хомбург",
+  "\u0431\u0430\u0434-\u0445\u043e\u043c\u0431\u0443\u0440\u0433",
   "eastbourne",
-  "истборн",
+  "\u0438\u0441\u0442\u0431\u043e\u0440\u043d",
   "seoul",
-  "сеул",
+  "\u0441\u0435\u0443\u043b",
   "ningbo",
-  "нинбо",
+  "\u043d\u0438\u043d\u0431\u043e",
   "tokyo",
-  "токио",
+  "\u0442\u043e\u043a\u0438\u043e"
 ];
 
 const RUSSIAN_NAME_HINTS = [
-  "медведев",
-  "рублев",
-  "рублёв",
-  "хачанов",
-  "сафиуллин",
-  "караццев",
-  "каратцев",
-  "котов",
-  "андреев",
-  "андреевa",
-  "андреева",
-  "шнайдер",
-  "александрова",
-  "касаткина",
-  "самсонова",
-  "кудерметова",
-  "потапова",
-  "павлюченкова",
-  "калинская",
-  "блинкова",
-  "рахимова",
-  "аванессян",
-  "звонарева",
-  "звонарёва",
+  "\u043c\u0435\u0434\u0432\u0435\u0434\u0435\u0432",
+  "\u0440\u0443\u0431\u043b\u0435\u0432",
+  "\u0440\u0443\u0431\u043b\u0451\u0432",
+  "\u0445\u0430\u0447\u0430\u043d\u043e\u0432",
+  "\u0441\u0430\u0444\u0438\u0443\u043b\u043b\u0438\u043d",
+  "\u043a\u0430\u0440\u0430\u0446\u0446\u0435\u0432",
+  "\u043a\u0430\u0440\u0430\u0442\u0446\u0435\u0432",
+  "\u043a\u043e\u0442\u043e\u0432",
+  "\u0430\u043d\u0434\u0440\u0435\u0435\u0432",
+  "\u0430\u043d\u0434\u0440\u0435\u0435\u0432a",
+  "\u0430\u043d\u0434\u0440\u0435\u0435\u0432\u0430",
+  "\u0448\u043d\u0430\u0439\u0434\u0435\u0440",
+  "\u0430\u043b\u0435\u043a\u0441\u0430\u043d\u0434\u0440\u043e\u0432\u0430",
+  "\u043a\u0430\u0441\u0430\u0442\u043a\u0438\u043d\u0430",
+  "\u0441\u0430\u043c\u0441\u043e\u043d\u043e\u0432\u0430",
+  "\u043a\u0443\u0434\u0435\u0440\u043c\u0435\u0442\u043e\u0432\u0430",
+  "\u043f\u043e\u0442\u0430\u043f\u043e\u0432\u0430",
+  "\u043f\u0430\u0432\u043b\u044e\u0447\u0435\u043d\u043a\u043e\u0432\u0430",
+  "\u043a\u0430\u043b\u0438\u043d\u0441\u043a\u0430\u044f",
+  "\u0431\u043b\u0438\u043d\u043a\u043e\u0432\u0430",
+  "\u0440\u0430\u0445\u0438\u043c\u043e\u0432\u0430",
+  "\u0430\u0432\u0430\u043d\u0435\u0441\u0441\u044f\u043d",
+  "\u0437\u0432\u043e\u043d\u0430\u0440\u0435\u0432\u0430",
+  "\u0437\u0432\u043e\u043d\u0430\u0440\u0451\u0432\u0430",
   "medvedev",
   "rublev",
   "khachanov",
@@ -165,7 +165,7 @@ const RUSSIAN_NAME_HINTS = [
   "blinkova",
   "rakhimova",
   "avanesyan",
-  "zvonareva",
+  "zvonareva"
 ];
 
 export default {
@@ -178,7 +178,7 @@ export default {
       return json({
         ok: true,
         service: "tennis-daily-summary-worker",
-        env: envShape(env),
+        env: envShape(env)
       });
     }
     if (url.pathname === "/run") {
@@ -197,23 +197,21 @@ export default {
     return json({
       ok: true,
       service: "tennis-daily-summary-worker",
-      routes: ["/health", "/diag", "/run?day=YYYY-MM-DD&secret=CRON_SECRET"],
+      routes: ["/health", "/diag", "/run?day=YYYY-MM-DD&secret=CRON_SECRET"]
     });
   },
 
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil(runDailySummary(env));
-  },
+  }
 };
 
 async function runDailySummary(env, options = {}) {
   const sql = db(env);
   await ensureSchema(sql);
-
   const today = localDate(env.APP_TZ || "Europe/Helsinki");
   const days = options.days || [today, addDays(today, -1)];
   const out = [];
-
   for (const day of days) {
     const data = await getEventsCache(sql, day);
     if (!data) {
@@ -230,10 +228,9 @@ async function runDailySummary(env, options = {}) {
       events: events.length,
       targetEvents: targetEvents.length,
       oddsSaved,
-      summariesSent,
+      summariesSent
     });
   }
-
   return { days: out };
 }
 
@@ -299,6 +296,54 @@ async function markOddsRefresh(sql, day) {
 }
 
 async function cacheMatchOdds(sql, env, day, targetEvents) {
+  const source = String(env.SUMMARY_ODDS_SOURCE || "flashscore").toLowerCase().replace(/-/g, "_");
+  if (["0", "false", "no", "off", "none"].includes(source)) {
+    return 0;
+  }
+  if (source === "odds_api") {
+    return cacheMatchOddsFromOddsApi(sql, env, day, targetEvents);
+  }
+  return cacheMatchOddsFromFlashscore(sql, env, day, targetEvents);
+}
+
+async function cacheMatchOddsFromFlashscore(sql, env, day, targetEvents) {
+  if (isOff(env.FLASHSCORE_ODDS_ENABLED, "1")) {
+    return 0;
+  }
+
+  const oddsMap = await getOddsMap(sql, day);
+  const eventsToFetch = targetEvents
+    .filter((event) => isFinished(event))
+    .filter((event) => resultLine(event))
+    .filter((event) => flashscoreMatchId(event))
+    .filter((event) => !oddsMap.has(event.event_id));
+
+  if (!eventsToFetch.length) {
+    return 0;
+  }
+
+  const refreshMinutes = Number(env.FLASHSCORE_ODDS_REFRESH_MINUTES || env.ODDS_REFRESH_MINUTES || 30);
+  if (!(await oddsRefreshDue(sql, day, refreshMinutes))) {
+    return 0;
+  }
+
+  const found = await flashscoreOddsForEvents(env, eventsToFetch);
+  let saved = 0;
+  for (const event of eventsToFetch) {
+    const odds = found.get(event.event_id);
+    if (!odds?.home_odds || !odds?.away_odds) {
+      continue;
+    }
+    await upsertMatchOdds(sql, event.event_id, day, odds.home_odds, odds.away_odds, "flashscore", odds.raw);
+    saved += 1;
+  }
+
+  await markOddsRefresh(sql, day);
+  console.log(`[summary] flashscore odds cached day=${day} saved=${saved} target_events=${eventsToFetch.length}`);
+  return saved;
+}
+
+async function cacheMatchOddsFromOddsApi(sql, env, day, targetEvents) {
   if (!env.ODDS_API_KEY) {
     return 0;
   }
@@ -306,13 +351,11 @@ async function cacheMatchOdds(sql, env, day, targetEvents) {
   if (!(await oddsRefreshDue(sql, day, refreshMinutes))) {
     return 0;
   }
-
   const eventsToMatch = targetEvents.filter((event) => !isFinished(event));
   if (!eventsToMatch.length) {
     await markOddsRefresh(sql, day);
     return 0;
   }
-
   const oddsItems = await oddsByDate(env, day);
   let saved = 0;
   for (const event of eventsToMatch) {
@@ -328,8 +371,177 @@ async function cacheMatchOdds(sql, env, day, targetEvents) {
     saved += 1;
   }
   await markOddsRefresh(sql, day);
-  console.log(`[summary] odds cached day=${day} saved=${saved} source_events=${oddsItems.length}`);
+  console.log(`[summary] odds api cached day=${day} saved=${saved} source_events=${oddsItems.length}`);
   return saved;
+}
+
+async function flashscoreOddsForEvents(env, events) {
+  const out = new Map();
+  const limit = Math.max(1, Number(env.FLASHSCORE_ODDS_CONCURRENCY || 4));
+  let index = 0;
+  async function worker() {
+    for (;;) {
+      const event = events[index++];
+      if (!event) {
+        break;
+      }
+      try {
+        const odds = await flashscoreOddsForEvent(env, event);
+        if (odds) {
+          out.set(event.event_id, odds);
+        }
+      } catch (error) {
+        console.log(`[flashscore_odds] fetch failed event_id=${event.event_id}: ${error?.message || error}`);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, events.length) }, worker));
+  return out;
+}
+
+async function flashscoreOddsForEvent(env, event) {
+  const matchId = flashscoreMatchId(event);
+  if (!matchId) {
+    return null;
+  }
+
+  const base = String(env.FLASHSCORE_BASE || "https://www.flashscorekz.com").replace(/\/+$/, "");
+  const pageUrl = `${base}/match/${matchId}/#/odds-comparison/1x2-odds/full-time`;
+  const pageResponse = await fetch(pageUrl, {
+    headers: {
+      accept: "text/html,*/*",
+      "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.5,en;q=0.4",
+      "user-agent": flashscoreUserAgent()
+    }
+  });
+  if (!pageResponse.ok) {
+    throw new Error(`page ${pageResponse.status}`);
+  }
+  const page = await pageResponse.text();
+  const { homeEp, awayEp, projectId } = flashscorePageMeta(page);
+
+  const oddsUrl = new URL(env.FLASHSCORE_ODDS_URL || "https://global.ds.lsapp.eu/odds/pq_graphql");
+  oddsUrl.searchParams.set("_hash", "oce");
+  oddsUrl.searchParams.set("eventId", matchId);
+  oddsUrl.searchParams.set("projectId", String(env.FLASHSCORE_PROJECT_ID || projectId || 46));
+  oddsUrl.searchParams.set("geoIpCode", String(env.FLASHSCORE_GEOIP_CODE || ""));
+  oddsUrl.searchParams.set("geoIpSubdivisionCode", String(env.FLASHSCORE_GEOIP_SUBDIVISION_CODE || ""));
+
+  const response = await fetch(oddsUrl.toString(), {
+    headers: {
+      accept: "application/json,*/*",
+      "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.5,en;q=0.4",
+      origin: base,
+      referer: pageUrl,
+      "user-agent": flashscoreUserAgent()
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`odds ${response.status} ${await response.text()}`);
+  }
+
+  const data = await response.json();
+  const root = data?.data?.findOddsByEventId;
+  if (!root) {
+    return null;
+  }
+  const pairs = flashscoreFullTimeHomeAwayPairs(root, homeEp, awayEp);
+  const activePairs = pairs.filter((pair) => pair.active);
+  const selected = activePairs.length ? activePairs : pairs;
+  if (!selected.length) {
+    return null;
+  }
+
+  return {
+    home_odds: median(selected.map((pair) => pair.home_odds)),
+    away_odds: median(selected.map((pair) => pair.away_odds)),
+    raw: {
+      match_id: matchId,
+      home_event_participant_id: homeEp,
+      away_event_participant_id: awayEp,
+      pairs: selected,
+      pairs_count: pairs.length
+    }
+  };
+}
+
+function flashscoreMatchId(event) {
+  const raw = event.raw || {};
+  if (raw.source && raw.source !== "flashscore") {
+    return "";
+  }
+  return String(raw.flashscore_id || raw.customId || event.custom_id || "").trim();
+}
+
+function flashscorePageMeta(page) {
+  const text = String(page || "");
+  const participantsMatch = text.match(/"participantsData":(\{.*?\}),"eventParticipantEncodedId"/s);
+  let homeEp = "";
+  let awayEp = "";
+  if (participantsMatch) {
+    try {
+      const participants = JSON.parse(participantsMatch[1]);
+      homeEp = String(participants.home?.[0]?.eventParticipantId || "");
+      awayEp = String(participants.away?.[0]?.eventParticipantId || "");
+    } catch (_error) {
+    }
+  }
+  const projectMatch = text.match(/"project":\{"id":(\d+)/);
+  return { homeEp, awayEp, projectId: projectMatch ? Number(projectMatch[1]) : 46 };
+}
+
+function flashscoreFullTimeHomeAwayPairs(root, homeEp, awayEp) {
+  const bookmakerNames = new Map();
+  for (const item of root.settings?.bookmakers || []) {
+    const id = Number(item.bookmaker?.id);
+    if (Number.isFinite(id)) {
+      bookmakerNames.set(id, String(item.bookmaker?.name || id));
+    }
+  }
+
+  const pairs = [];
+  for (const market of root.odds || []) {
+    if (market.bettingType !== "HOME_AWAY" || market.bettingScope !== "FULL_TIME") {
+      continue;
+    }
+
+    const items = market.odds || [];
+    const byParticipant = new Map(items.map((item) => [String(item.eventParticipantId || ""), item]));
+    let homeItem = homeEp ? byParticipant.get(homeEp) : null;
+    let awayItem = awayEp ? byParticipant.get(awayEp) : null;
+    if ((!homeItem || !awayItem) && items.length === 2) {
+      [homeItem, awayItem] = items;
+    }
+
+    const homeOdds = Number(String(homeItem?.value || "").replace(",", "."));
+    const awayOdds = Number(String(awayItem?.value || "").replace(",", "."));
+    if (!Number.isFinite(homeOdds) || !Number.isFinite(awayOdds) || homeOdds <= 1 || awayOdds <= 1) {
+      continue;
+    }
+
+    const bookmakerId = Number(market.bookmakerId) || 0;
+    pairs.push({
+      bookmaker_id: bookmakerId,
+      bookmaker_name: bookmakerNames.get(bookmakerId) || String(bookmakerId || "unknown"),
+      home_odds: homeOdds,
+      away_odds: awayOdds,
+      active: Boolean(homeItem?.active) && Boolean(awayItem?.active)
+    });
+  }
+  return pairs;
+}
+
+function isOff(value, defaultValue = "") {
+  return ["0", "false", "no", "off"].includes(String(value ?? defaultValue).toLowerCase());
+}
+
+function flashscoreUserAgent() {
+  const agents = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+  ];
+  return agents[Math.floor(Math.random() * agents.length)];
 }
 
 async function oddsByDate(env, day) {
@@ -343,7 +555,7 @@ async function oddsByDate(env, day) {
       oddsFormat: "decimal",
       dateFormat: "iso",
       commenceTimeFrom: from,
-      commenceTimeTo: to,
+      commenceTimeTo: to
     };
     if (env.ODDS_API_BOOKMAKERS) {
       params.bookmakers = env.ODDS_API_BOOKMAKERS;
@@ -418,6 +630,9 @@ async function getOddsMap(sql, day) {
 }
 
 async function publishDailySummaries(sql, env, day, events) {
+  if (isOff(env.SUMMARY_ENABLED, "1")) {
+    return 0;
+  }
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = env.SUMMARY_CHAT_ID || env.PUBLISH_CHAT_ID || env.RESULTS_CHAT_ID;
   if (!token || !chatId) {
@@ -427,7 +642,6 @@ async function publishDailySummaries(sql, env, day, events) {
   const oddsMap = await getOddsMap(sql, day);
   const groups = targetGroups(events);
   let sent = 0;
-
   for (const item of groups) {
     const { group, tournament, status, rows } = item;
     if (!rows.length || !rows.every(isFinished)) {
@@ -467,7 +681,7 @@ function targetGroups(events) {
         group: event.tour_group || "",
         tournament: event.tournament_name || "",
         status: event.tournament_status || "",
-        rows: [],
+        rows: []
       });
     }
     grouped.get(key).rows.push(event);
@@ -498,9 +712,8 @@ function buildSummaryText(env, group, tournament, stage, events, oddsMap) {
     pickem: [],
     unexpected: [],
     sad: [],
-    no_odds: [],
+    no_odds: []
   };
-
   const sorted = [...events].sort((a, b) => Number(a.start_ts || 0) - Number(b.start_ts || 0));
   for (const event of sorted) {
     const line = resultLine(event);
@@ -510,20 +723,19 @@ function buildSummaryText(env, group, tournament, stage, events, oddsMap) {
     const category = categoryFor(env, event, oddsMap.get(event.event_id));
     buckets[category].push(line);
   }
-
   if (!Object.values(buckets).some((rows) => rows.length)) {
     return "";
   }
 
   const sections = [
-    ["expected", "👌🏻 Ожидаемо"],
-    ["pickem", "🟰Когда шансы 50/50"],
-    ["unexpected", "⚡ Неожиданно"],
-    ["sad", "😥  Грустно"],
-    ["no_odds", "Без коэффициентов"],
+    ["expected", "\u{1F44C}\u{1F3FB} \u041e\u0436\u0438\u0434\u0430\u0435\u043c\u043e"],
+    ["pickem", "\u{1F7F0}\u041a\u043e\u0433\u0434\u0430 \u0448\u0430\u043d\u0441\u044b 50/50"],
+    ["unexpected", "\u26A1 \u041d\u0435\u043e\u0436\u0438\u0434\u0430\u043d\u043d\u043e"],
+    ["sad", "\u{1F625}  \u0413\u0440\u0443\u0441\u0442\u043d\u043e"],
+    ["no_odds", "\u0411\u0435\u0437 \u043a\u043e\u044d\u0444\u0444\u0438\u0446\u0438\u0435\u043d\u0442\u043e\u0432"]
   ];
 
-  const lines = ["📊 Результаты игрового дня", "", header(tournament, group, stage)];
+  const lines = ["\u{1F4CA} \u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b \u0438\u0433\u0440\u043e\u0432\u043e\u0433\u043e \u0434\u043d\u044f", "", header(tournament, group, stage)];
   for (const [key, title] of sections) {
     if (!buckets[key].length) {
       continue;
@@ -534,9 +746,9 @@ function buildSummaryText(env, group, tournament, stage, events, oddsMap) {
 }
 
 function header(tournament, group, stage) {
-  const emoji = group === "women" ? "🙋🏼‍♀️" : "🙋🏼‍♂️";
-  const gender = group === "women" ? "женщины" : "мужчины";
-  const stageText = stage ? stage.toLowerCase() : "игровой день";
+  const emoji = group === "women" ? "\u{1F64B}\u{1F3FC}\u200D\u2640\uFE0F" : "\u{1F64B}\u{1F3FC}\u200D\u2642\uFE0F";
+  const gender = group === "women" ? "\u0436\u0435\u043d\u0449\u0438\u043d\u044b" : "\u043c\u0443\u0436\u0447\u0438\u043d\u044b";
+  const stageText = stage ? stage.toLowerCase() : "\u0438\u0433\u0440\u043e\u0432\u043e\u0439 \u0434\u0435\u043d\u044c";
   return `${emoji} ${tournament}, ${gender}, ${stageText}`;
 }
 
@@ -558,7 +770,7 @@ function categoryFor(env, event, odds) {
   if (homeOdds <= 1 || awayOdds <= 1) {
     return "no_odds";
   }
-  const homeProb = (1 / homeOdds) / (1 / homeOdds + 1 / awayOdds);
+  const homeProb = 1 / homeOdds / (1 / homeOdds + 1 / awayOdds);
   const awayProb = 1 - homeProb;
   const pickemMargin = Number(env.SUMMARY_PICKEM_MARGIN || 0.08);
   if (Math.abs(homeProb - awayProb) <= pickemMargin) {
@@ -578,7 +790,7 @@ function resultLine(event) {
   if (!score) {
     return "";
   }
-  return `${shortSide(event[`${winner}_name`] || "TBD")} — ${shortSide(event[`${loser}_name`] || "TBD")} ${score}`;
+  return `${shortSide(event[`${winner}_name`] || "TBD")} \u2014 ${shortSide(event[`${loser}_name`] || "TBD")} ${score}`;
 }
 
 function winnerSide(event) {
@@ -589,6 +801,7 @@ function winnerSide(event) {
   if (String(code) === "2") {
     return "away";
   }
+
   const home = numberOrNull(event.raw?.homeScore?.current ?? event.raw?.homeScore?.display);
   const away = numberOrNull(event.raw?.awayScore?.current ?? event.raw?.awayScore?.display);
   if (home !== null && away !== null) {
@@ -636,19 +849,15 @@ function fmtNum(value) {
 function shortSide(name) {
   const text = String(name || "").replace(/\u00a0/g, " ").trim();
   if (text.includes("/")) {
-    return text
-      .split("/")
-      .map((part) => shortPlayer(part))
-      .filter(Boolean)
-      .join(" / ");
+    return text.split("/").map((part) => shortPlayer(part)).filter(Boolean).join(" / ");
   }
   return shortPlayer(text);
 }
 
 function shortPlayer(part) {
   return String(part || "")
-    .replace(/\s+[A-ZА-ЯЁ]\.(?:\s*-\s*[A-ZА-ЯЁ]\.)?$/u, "")
-    .replace(/^([A-ZА-ЯЁ])\.\s*(\S+)$/u, "$1.$2")
+    .replace(/\s+[A-Z\u0410-\u042f\u0401]\.(?:\s*-\s*[A-Z\u0410-\u042f\u0401]\.)?$/u, "")
+    .replace(/^([A-Z\u0410-\u042f\u0401])\.\s*(\S+)$/u, "$1.$2")
     .trim();
 }
 
@@ -656,7 +865,7 @@ async function sendTelegramMessage(token, chatId, text) {
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: chatId, text })
   });
   if (!response.ok) {
     console.log(`[tg] send failed: ${response.status} ${await response.text()}`);
@@ -673,7 +882,6 @@ function normalizeEvents(data) {
         rows.push(normalizeEvent(raw));
       }
     } catch (_error) {
-      // Bad upstream records should not stop the whole cron tick.
     }
   }
   return rows;
@@ -698,7 +906,7 @@ function normalizeEvent(raw) {
     away_name: sideName(raw, "away"),
     start_ts: Number.isInteger(raw.startTimestamp) ? raw.startTimestamp : null,
     status_type: String(raw.status?.type || "").toLowerCase(),
-    raw,
+    raw
   };
 }
 
@@ -724,13 +932,13 @@ function classify(raw) {
   if (containsAny(hay, ["itf", "m15", "m25", "m35", "m50", "w15", "w25", "w35", "w50", "w75", "w100"])) {
     return "ITF";
   }
-  if (hay.includes("challenger") || hay.includes("челленджер")) {
+  if (hay.includes("challenger") || hay.includes("\u0447\u0435\u043b\u043b\u0435\u043d\u0434\u0436\u0435\u0440")) {
     return "Challenger";
   }
-  if (containsAny(hay, ["wta", "women", "female", "женщин"])) {
+  if (containsAny(hay, ["wta", "women", "female", "\u0436\u0435\u043d\u0449\u0438\u043d"])) {
     return "WTA";
   }
-  if (containsAny(hay, ["atp", "men", "male", "мужчин"])) {
+  if (containsAny(hay, ["atp", "men", "male", "\u043c\u0443\u0436\u0447\u0438\u043d"])) {
     return "ATP";
   }
   return "Other";
@@ -742,10 +950,10 @@ function tourGroup(raw) {
   }
   const category = classify(raw);
   const hay = lower(categoryName(raw), tournamentName(raw), seasonName(raw));
-  if (category === "WTA" || containsAny(hay, ["wta", "women", "female", "женщин", "w15", "w25", "w35", "w50", "w75", "w100"])) {
+  if (category === "WTA" || containsAny(hay, ["wta", "women", "female", "\u0436\u0435\u043d\u0449\u0438\u043d", "w15", "w25", "w35", "w50", "w75", "w100"])) {
     return "women";
   }
-  if (category === "ATP" || category === "Challenger" || containsAny(hay, ["atp", "challenger", "челленджер", "men", "male", "мужчин", "m15", "m25", "m35", "m50"])) {
+  if (category === "ATP" || category === "Challenger" || containsAny(hay, ["atp", "challenger", "\u0447\u0435\u043b\u043b\u0435\u043d\u0434\u0436\u0435\u0440", "men", "male", "\u043c\u0443\u0436\u0447\u0438\u043d", "m15", "m25", "m35", "m50"])) {
     return "men";
   }
   return "other";
@@ -756,7 +964,7 @@ function rankedStatus(category, tournament, season) {
   if (category === "ITF" || containsAny(hay, ["itf", "m15", "m25", "m35", "m50", "w15", "w25", "w35", "w50", "w75", "w100"])) {
     return ["ITF", 5];
   }
-  if (category === "Challenger" || hay.includes("challenger") || hay.includes("челленджер")) {
+  if (category === "Challenger" || hay.includes("challenger") || hay.includes("\u0447\u0435\u043b\u043b\u0435\u043d\u0434\u0436\u0435\u0440")) {
     return ["Challenger", 4];
   }
   if (containsAny(hay, GRAND_SLAM_TOURNAMENTS)) {
@@ -821,7 +1029,7 @@ function isTargetEvent(event) {
 
 function isDoubles(event) {
   const hay = norm([event.raw?.flashscore_league, event.season_name, event.tournament_name].join(" "));
-  return hay.includes("парн") || hay.includes("doubles");
+  return hay.includes("\u043f\u0430\u0440\u043d") || hay.includes("doubles");
 }
 
 function isFinished(event) {
@@ -838,7 +1046,7 @@ function commonStage(events) {
     counts.set(stage, (counts.get(stage) || 0) + 1);
   }
   if (!counts.size) {
-    return "игровой день";
+    return "\u0438\u0433\u0440\u043e\u0432\u043e\u0439 \u0434\u0435\u043d\u044c";
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
@@ -847,19 +1055,19 @@ function normalizeStage(value) {
   const text = String(value || "").trim();
   if (!text) return "";
   return text
-    .replace(/round of 128/i, "1/64 финала")
-    .replace(/round of 64/i, "1/32 финала")
-    .replace(/round of 32/i, "1/16 финала")
-    .replace(/round of 16/i, "1/8 финала")
-    .replace(/quarter-finals?/i, "1/4 финала")
-    .replace(/semi-finals?/i, "1/2 финала")
-    .replace(/final/i, "финал");
+    .replace(/round of 128/i, "1/64 \u0444\u0438\u043d\u0430\u043b\u0430")
+    .replace(/round of 64/i, "1/32 \u0444\u0438\u043d\u0430\u043b\u0430")
+    .replace(/round of 32/i, "1/16 \u0444\u0438\u043d\u0430\u043b\u0430")
+    .replace(/round of 16/i, "1/8 \u0444\u0438\u043d\u0430\u043b\u0430")
+    .replace(/quarter-finals?/i, "1/4 \u0444\u0438\u043d\u0430\u043b\u0430")
+    .replace(/semi-finals?/i, "1/2 \u0444\u0438\u043d\u0430\u043b\u0430")
+    .replace(/final/i, "\u0444\u0438\u043d\u0430\u043b");
 }
 
 function isRussianSide(env, event, side) {
   const competitor = event.raw?.[side === "home" ? "homeCompetitor" : "awayCompetitor"] || {};
   const countries = Array.isArray(competitor.countries) ? competitor.countries.join(" ") : competitor.country || "";
-  if (tokens(countries).some((token) => ["россия", "russia", "rus"].includes(token))) {
+  if (tokens(countries).some((token) => ["\u0440\u043e\u0441\u0441\u0438\u044f", "russia", "rus"].includes(token))) {
     return true;
   }
   const hints = new Set(RUSSIAN_NAME_HINTS.concat(splitList(env.SUMMARY_RUSSIAN_NAME_HINTS).map(norm)));
@@ -872,7 +1080,6 @@ function matchOddsItem(event, oddsItems) {
   const awayTokens = sideTokens(event, "away");
   let best = null;
   let bestScore = -1;
-
   for (const item of oddsItems) {
     const delta = timeDeltaSeconds(event, item);
     if (delta > 18 * 60 * 60) {
@@ -901,7 +1108,6 @@ function oddsPricesForEvent(event, oddsItem) {
   const awayTokens = sideTokens(event, "away");
   const homePrices = [];
   const awayPrices = [];
-
   for (const bookmaker of oddsItem.bookmakers || []) {
     for (const market of bookmaker.markets || []) {
       if (market.key !== "h2h") {
@@ -971,33 +1177,40 @@ function envShape(env) {
     "TELEGRAM_BOT_TOKEN",
     "PUBLISH_CHAT_ID",
     "SUMMARY_CHAT_ID",
+    "SUMMARY_ENABLED",
+    "SUMMARY_ODDS_SOURCE",
+    "SUMMARY_REQUIRE_ODDS",
+    "SUMMARY_PICKEM_MARGIN",
+    "FLASHSCORE_ODDS_ENABLED",
+    "FLASHSCORE_ODDS_REFRESH_MINUTES",
+    "FLASHSCORE_BASE",
     "ODDS_API_KEY",
+    "ODDS_API_MARKETS",
+    "ODDS_API_REGIONS",
+    "ODDS_REFRESH_MINUTES",
     "CRON_SECRET",
-    "APP_TZ",
+    "APP_TZ"
   ];
   return Object.fromEntries(
     keys.map((key) => [
       key,
       {
         present: Boolean(env[key]),
-        length: env[key] ? String(env[key]).length : 0,
-      },
-    ]),
+        length: env[key] ? String(env[key]).length : 0
+      }
+    ])
   );
 }
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value, null, 2), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: { "content-type": "application/json; charset=utf-8" }
   });
 }
 
 function splitList(value) {
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 function containsAny(hay, needles) {
@@ -1013,7 +1226,7 @@ function norm(value) {
     .normalize("NFKD")
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase()
-    .replace(/ё/g, "е")
+    .replace(/\u0451/g, "\u0435")
     .trim();
 }
 
@@ -1031,7 +1244,7 @@ function localDate(timeZone, date = new Date()) {
     timeZone,
     year: "numeric",
     month: "2-digit",
-    day: "2-digit",
+    day: "2-digit"
   }).formatToParts(date);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
@@ -1067,7 +1280,7 @@ function timeZoneOffsetMs(timeZone, date) {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hourCycle: "h23",
+    hourCycle: "h23"
   }).formatToParts(date);
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   const asUtc = Date.UTC(
@@ -1076,7 +1289,7 @@ function timeZoneOffsetMs(timeZone, date) {
     Number(values.day),
     Number(values.hour),
     Number(values.minute),
-    Number(values.second),
+    Number(values.second)
   );
   return asUtc - date.getTime();
 }

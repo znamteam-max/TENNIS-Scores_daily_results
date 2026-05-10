@@ -1,6 +1,7 @@
 name = "tennis-daily-results"
 main = "src/index.js"
 compatibility_date = "2026-05-07"
+compatibility_flags = ["nodejs_compat"]
 
 [observability]
 enabled = true
@@ -10,6 +11,10 @@ crons = ["* * * * *"]
 
 [vars]
 APP_TZ = "Europe/Helsinki"
+SUMMARY_ENABLED = "1"
+SUMMARY_ODDS_SOURCE = "flashscore"
+FLASHSCORE_ODDS_ENABLED = "1"
+FLASHSCORE_ODDS_REFRESH_MINUTES = "30"
 ODDS_API_REGIONS = "eu"
 ODDS_API_MARKETS = "h2h"
 ODDS_REFRESH_MINUTES = "30"
