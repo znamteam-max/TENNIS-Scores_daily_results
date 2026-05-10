@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 enabled = true
 
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/15 * * * *"]
 
 [vars]
 APP_TZ = "Europe/Helsinki"
