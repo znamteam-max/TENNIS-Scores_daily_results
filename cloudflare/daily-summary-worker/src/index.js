@@ -1,7 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 
-const TARGET_RANKS = new Set([0, 1, 2, 3]);
-const TARGET_CATEGORIES = new Set(["ATP", "WTA"]);
+const TARGET_RANKS = new Set([0, 1, 2, 3, 4]);
+const TARGET_CATEGORIES = new Set(["ATP", "WTA", "Challenger"]);
 
 const GRAND_SLAM_TOURNAMENTS = [
   "australian open",
