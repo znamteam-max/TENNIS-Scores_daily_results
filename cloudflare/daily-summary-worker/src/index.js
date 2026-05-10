@@ -344,6 +344,23 @@ async function ensureSchema(sql) {
       sent_at timestamptz not null default now()
     )
   `;
+  await sql`
+    create table if not exists summary_reviews (
+      summary_id text primary key,
+      chat_id text not null,
+      message_id bigint,
+      source_chat_id bigint,
+      day date not null,
+      tour_group text not null,
+      tournament_name text not null,
+      tournament_status text not null,
+      stage text not null default '',
+      event_data jsonb not null,
+      overrides jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `;
 }
 
 async function getEventsCache(sql, day) {
@@ -746,7 +763,12 @@ async function publishDailySummaries(sql, env, day, events) {
     if (!text) {
       continue;
     }
-    if (await sendTelegramMessage(token, chatId, text)) {
+    const summaryId = summaryReviewId();
+    await saveSummaryReview(sql, summaryId, chatId, day, group, tournament, status, stage, resultRows);
+    const response = await sendTelegramMessage(token, chatId, text, summaryReviewMenu(summaryId));
+    const messageId = response?.result?.message_id;
+    if (messageId) {
+      await setSummaryReviewMessage(sql, summaryId, messageId);
       await markDailySummarySent(sql, key, day, group, tournament, status, stage);
       sent += 1;
     }
@@ -788,6 +810,50 @@ async function markDailySummarySent(sql, key, day, group, tournament, status, st
     insert into daily_summaries (summary_key, day, tour_group, tournament_name, tournament_status, stage, sent_at)
     values (${key}, ${day}, ${group || ""}, ${tournament || ""}, ${status || ""}, ${stage || ""}, now())
     on conflict (summary_key) do nothing
+  `;
+}
+
+function summaryReviewId() {
+  return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-6);
+}
+
+function summaryReviewMenu(summaryId) {
+  return {
+    inline_keyboard: [
+      [{ text: "\u270F\uFE0F \u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0438\u0442\u043e\u0433", callback_data: `sum_edit|${summaryId}` }]
+    ]
+  };
+}
+
+async function saveSummaryReview(sql, summaryId, chatId, day, group, tournament, status, stage, events) {
+  await sql`
+    insert into summary_reviews (
+      summary_id, chat_id, source_chat_id, message_id, day, tour_group,
+      tournament_name, tournament_status, stage, event_data, overrides, updated_at
+    )
+    values (
+      ${summaryId}, ${String(chatId)}, null, null, ${day}, ${group || ""},
+      ${tournament || ""}, ${status || ""}, ${stage || ""},
+      ${JSON.stringify(events)}::jsonb, '{}'::jsonb, now()
+    )
+    on conflict (summary_id) do update
+    set chat_id = excluded.chat_id,
+        day = excluded.day,
+        tour_group = excluded.tour_group,
+        tournament_name = excluded.tournament_name,
+        tournament_status = excluded.tournament_status,
+        stage = excluded.stage,
+        event_data = excluded.event_data,
+        overrides = excluded.overrides,
+        updated_at = now()
+  `;
+}
+
+async function setSummaryReviewMessage(sql, summaryId, messageId) {
+  await sql`
+    update summary_reviews
+    set message_id = ${Number(messageId)}, updated_at = now()
+    where summary_id = ${summaryId}
   `;
 }
 
@@ -863,7 +929,12 @@ function categoryFor(env, event, odds) {
     return "pickem";
   }
   const favorite = homeOdds < awayOdds ? "home" : "away";
-  return winner === favorite ? "expected" : "unexpected";
+  if (winner === favorite) {
+    return "expected";
+  }
+  const upsetMinOdds = Number(env.SUMMARY_UPSET_MIN_ODDS || 3);
+  const winnerOdds = winner === "home" ? homeOdds : awayOdds;
+  return winnerOdds >= upsetMinOdds ? "unexpected" : "expected";
 }
 
 function lineWithAverageOdds(event, line, odds) {
@@ -962,21 +1033,26 @@ function shortSide(name) {
 function shortPlayer(part) {
   return String(part || "")
     .replace(/\s+[A-Z\u0410-\u042f\u0401]\.(?:\s*-\s*[A-Z\u0410-\u042f\u0401]\.)?$/u, "")
+    .replace(/\s+(?:\u0414\u0436|\u0416|\u0425|\u041c|\u041d|\u0421|J|H|M|N|S)$/u, "")
     .replace(/^([A-Z\u0410-\u042f\u0401])\.\s*(\S+)$/u, "$1.$2")
     .trim();
 }
 
-async function sendTelegramMessage(token, chatId, text) {
+async function sendTelegramMessage(token, chatId, text, replyMarkup) {
+  const body = { chat_id: chatId, text };
+  if (replyMarkup) {
+    body.reply_markup = replyMarkup;
+  }
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text })
+    body: JSON.stringify(body)
   });
   if (!response.ok) {
     console.log(`[tg] send failed: ${response.status} ${await response.text()}`);
-    return false;
+    return null;
   }
-  return true;
+  return response.json();
 }
 
 function normalizeEvents(data) {
