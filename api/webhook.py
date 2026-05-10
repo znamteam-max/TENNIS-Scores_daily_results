@@ -656,6 +656,17 @@ def _summary_review_menu(summary_id: str) -> Dict[str, Any]:
     )
 
 
+def _summary_approval_menu(summary_id: str) -> Dict[str, Any]:
+    return _kb(
+        [
+            [
+                _btn("Опубликовать", f"auto_sum_publish|{summary_id}"),
+                _btn("Не публиковать", f"auto_sum_skip|{summary_id}"),
+            ]
+        ]
+    )
+
+
 def _summary_edit_menu(summary_id: str) -> Dict[str, Any]:
     return _kb(
         [
@@ -1199,6 +1210,45 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
                 tg_edit_message(chat_id, message_id, "Итоги отправлены.", reply_markup=_summary_tournament_menu(group, day, idx + 1))
             else:
                 tg_edit_message(chat_id, message_id, "Не смог отправить итоги.", reply_markup=_summary_tournament_menu(group, day, idx + 1))
+            return
+
+        if data.startswith("auto_sum_publish|"):
+            _, summary_id = data.split("|", 1)
+            review = get_summary_review(summary_id)
+            if not review or not review.get("message_id"):
+                tg_answer_callback_query(cq_id, "Итог не найден", show_alert=True)
+                return
+            text = _summary_review_text(review)
+            if not text:
+                tg_answer_callback_query(cq_id, "Не получилось собрать текст итогов", show_alert=True)
+                return
+            tg_answer_callback_query(cq_id, "Собираю результаты...")
+            tg_send_chat_action(str(review["chat_id"]), "typing")
+            tg_edit_message(str(review["chat_id"]), int(review["message_id"]), text, reply_markup=_summary_review_menu(summary_id))
+            mark_daily_summary_for_tournament(
+                review["day"],
+                str(review.get("tour_group") or ""),
+                str(review.get("tournament_name") or ""),
+                str(review.get("tournament_status") or ""),
+                str(review.get("stage") or ""),
+            )
+            return
+
+        if data.startswith("auto_sum_skip|"):
+            _, summary_id = data.split("|", 1)
+            review = get_summary_review(summary_id)
+            if not review or not review.get("message_id"):
+                tg_answer_callback_query(cq_id, "Итог не найден", show_alert=True)
+                return
+            mark_daily_summary_for_tournament(
+                review["day"],
+                str(review.get("tour_group") or ""),
+                str(review.get("tournament_name") or ""),
+                str(review.get("tournament_status") or ""),
+                str(review.get("stage") or ""),
+            )
+            tg_edit_message(str(review["chat_id"]), int(review["message_id"]), "Ок, этот итог не публикуем.")
+            tg_answer_callback_query(cq_id, "Не публикуем")
             return
 
         if data.startswith("sum_edit|"):

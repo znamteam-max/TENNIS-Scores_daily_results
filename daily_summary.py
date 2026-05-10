@@ -25,8 +25,8 @@ from providers import flashscore_odds, odds_api
 from providers import sofascore as ss
 
 
-TARGET_RANKS = {0, 1, 2, 3, 4}
-TARGET_CATEGORIES = {"ATP", "WTA", "Challenger"}
+TARGET_RANKS = {0, 1, 2, 3}
+TARGET_CATEGORIES = {"ATP"}
 RUSSIAN_NAME_HINTS = {
     "медведев",
     "рублев",
