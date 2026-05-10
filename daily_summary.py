@@ -441,6 +441,30 @@ def _category_for(event: Dict[str, Any], odds: Optional[Dict[str, Any]]) -> str:
     return "expected" if winner == favorite else "unexpected"
 
 
+def _float_or_none(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    return number if number > 0 else None
+
+
+def _fmt_odds(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def _line_with_average_odds(event: Dict[str, Any], line: str, odds: Optional[Dict[str, Any]]) -> str:
+    winner = _winner_side(event)
+    if winner not in {"home", "away"} or not odds:
+        return line
+    home_odds = _float_or_none(odds.get("home_odds"))
+    away_odds = _float_or_none(odds.get("away_odds"))
+    if home_odds is None or away_odds is None:
+        return line
+    winner_odds, loser_odds = (home_odds, away_odds) if winner == "home" else (away_odds, home_odds)
+    return f"{line} (ср. кэф. {_fmt_odds(winner_odds)} vs {_fmt_odds(loser_odds)})"
+
+
 def _summary_key(day: dt.date, group: str, tournament: str, status: str, stage: str) -> str:
     return "|".join([day.isoformat(), group or "", status or "", tournament or "", stage or ""])
 
@@ -457,14 +481,18 @@ def _build_summary_text(day: dt.date, group: str, tournament: str, stage: str, e
         line = _result_line(event)
         if not line:
             continue
-        buckets[_category_for(event, odds_map.get(int(event["event_id"])))].append(line)
+        odds = odds_map.get(int(event["event_id"]))
+        category = _category_for(event, odds)
+        if category == "unexpected":
+            line = _line_with_average_odds(event, line, odds)
+        buckets[category].append(line)
     if not any(buckets.values()):
         return ""
 
     sections = [
+        ("unexpected", "⚡ Сенсации"),
         ("expected", "👌🏻 Ожидаемо"),
         ("pickem", "🟰Когда шансы 50/50"),
-        ("unexpected", "⚡ Неожиданно"),
         ("sad", "😥  Грустно"),
         ("no_odds", "Без коэффициентов"),
     ]

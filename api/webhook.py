@@ -22,6 +22,7 @@ from db_pg import (
     list_match_watches,
     mark_match_notified,
     remove_match_watch,
+    ru_name_for,
     set_alias,
     set_events_cache,
     set_state,
@@ -52,6 +53,7 @@ BOT_COMMANDS = [
     {"command": "my", "description": "показать выбранные матчи"},
     {"command": "tz", "description": "сменить часовой пояс, например Europe/Helsinki"},
 ]
+_ALIAS_CACHE: Dict[str, str] = {}
 
 
 def _tg_api(method: str) -> str:
@@ -156,6 +158,8 @@ def _day_label(chat_id: int, day: dt.date) -> str:
         return "сегодня"
     if day == today - dt.timedelta(days=1):
         return "вчера"
+    if day == today + dt.timedelta(days=1):
+        return "завтра"
     return day.strftime("%d.%m.%Y")
 
 
@@ -332,7 +336,7 @@ def _handle_card_edit_text(chat_id: int, text: str, payload: Dict[str, Any]) -> 
         for sources, ru in ((home_sources, home_name), (away_sources, away_name)):
             for original in sources:
                 if original and ru:
-                    set_alias(str(original), str(ru))
+                    _set_alias_forever(str(original), str(ru))
     elif field == "score":
         scores = _parse_score(value)
         if not scores:
@@ -425,10 +429,46 @@ def _find_match(chat_id: int, event_id: int, day: Optional[dt.date] = None) -> O
 def _tour_groups_menu(chat_id: int) -> Dict[str, Any]:
     return _kb(
         [
-            [_btn("Мужской тур", "group|men")],
-            [_btn("Женский тур", "group|women")],
+            [_btn("📅 Расписание", "menu|schedule")],
+            [
+                _btn("Мужской тур сегодня", "group|men"),
+                _btn("Женский тур сегодня", "group|women"),
+            ],
             [_btn("📊 Итоги дня", "menu|summary")],
             [_btn("Мои матчи", "menu|mine")],
+        ]
+    )
+
+
+def _schedule_dates_menu(chat_id: int) -> Dict[str, Any]:
+    today = _today(chat_id)
+    tomorrow = today + dt.timedelta(days=1)
+    yesterday = today - dt.timedelta(days=1)
+    return _kb(
+        [
+            [
+                _btn("Сегодня", f"sched_date|{today.isoformat()}"),
+                _btn("Завтра", f"sched_date|{tomorrow.isoformat()}"),
+            ],
+            [_btn("Вчера", f"sched_date|{yesterday.isoformat()}")],
+            [_btn("Назад", "menu|root")],
+        ]
+    )
+
+
+def _schedule_groups_title(chat_id: int, day: dt.date) -> str:
+    return f"📅 Расписание - {_day_label(chat_id, day)}\nВыбери тур:"
+
+
+def _schedule_groups_menu(day: dt.date) -> Dict[str, Any]:
+    return _kb(
+        [
+            [
+                _btn("Мужчины", f"sched_group|men|{day.isoformat()}"),
+                _btn("Женщины", f"sched_group|women|{day.isoformat()}"),
+            ],
+            [_btn("К датам", "menu|schedule")],
+            [_btn("В начало", "menu|root")],
         ]
     )
 
@@ -442,12 +482,18 @@ def _tournaments_title(chat_id: int, group: str, day: dt.date) -> str:
     return f"{ss.tour_label(group)} - {_day_label(chat_id, day)}\nВыбери турнир:"
 
 
-def _date_switch_button(chat_id: int, group: str, day: dt.date) -> Dict[str, str]:
+def _date_nav_buttons(chat_id: int, group: str, day: dt.date) -> List[Dict[str, str]]:
     today = _today(chat_id)
+    prev_day = day - dt.timedelta(days=1)
+    next_day = day + dt.timedelta(days=1)
+    today_button = _btn("Сегодня", f"date|{group}|{today.isoformat()}")
     if day == today:
-        target = today - dt.timedelta(days=1)
-        return _btn("Вчера", f"date|{group}|{target.isoformat()}")
-    return _btn("Сегодня", f"date|{group}|{today.isoformat()}")
+        today_button = _btn("Сегодня ✓", "noop")
+    return [
+        _btn("← День назад", f"date|{group}|{prev_day.isoformat()}"),
+        today_button,
+        _btn("День вперед →", f"date|{group}|{next_day.isoformat()}"),
+    ]
 
 
 def _tournaments_menu(chat_id: int, group: str, day: Optional[dt.date] = None) -> Dict[str, Any]:
@@ -462,7 +508,7 @@ def _tournaments_menu(chat_id: int, group: str, day: Optional[dt.date] = None) -
         status = str(item.get("tournament_status") or item.get("category") or "").strip()
         title = f"{status} · {item['tournament_name']}" if status else str(item["tournament_name"])
         rows.append([_btn(_cut(f"{title} ({', '.join(bits)})"), f"tour|{group}|{idx}")])
-    rows.append([_date_switch_button(chat_id, group, day)])
+    rows.append(_date_nav_buttons(chat_id, group, day))
     rows.append([_btn("Назад", "menu|root")])
     return _kb(rows)
 
@@ -553,6 +599,100 @@ def _summary_tournament_menu(group: str, day: dt.date, idx: int) -> Dict[str, An
     )
 
 
+def _alias_or_original(name: Any) -> str:
+    raw = " ".join(str(name or "").split())
+    if not raw:
+        return raw
+    if raw in _ALIAS_CACHE:
+        return _ALIAS_CACHE[raw] or raw
+    try:
+        alias, ok = ru_name_for(raw)
+        if ok and alias:
+            _ALIAS_CACHE[raw] = alias
+            return alias
+    except Exception as exc:
+        print(f"[names] alias lookup failed: {exc}")
+    _ALIAS_CACHE[raw] = ""
+    return raw
+
+
+def _display_side_name(name: Any) -> str:
+    return _alias_or_original(name) or "TBD"
+
+
+def _set_alias_forever(original: str, ru_name: str) -> None:
+    set_alias(original, ru_name)
+    raw = " ".join(str(original or "").split())
+    if raw:
+        _ALIAS_CACHE[raw] = " ".join(str(ru_name or "").split())
+
+
+def _side_alias_sources(event: Dict[str, Any], side: str) -> List[str]:
+    sources: List[str] = [str(event.get(f"{side}_name") or "").strip()]
+    raw = event.get("raw") or {}
+    keys = ["homePlayer", "homeCompetitor", "homeTeam", "home"] if side == "home" else ["awayPlayer", "awayCompetitor", "awayTeam", "away"]
+    for key in keys:
+        obj = raw.get(key)
+        if isinstance(obj, dict):
+            sources.extend([str(obj.get("name") or "").strip(), str(obj.get("shortName") or "").strip()])
+    out: List[str] = []
+    seen: set[str] = set()
+    for source in sources:
+        if not source or source.upper() == "TBD" or source in seen:
+            continue
+        seen.add(source)
+        out.append(source)
+    return out
+
+
+def _save_side_aliases(event: Dict[str, Any], side: str, ru_name: str) -> None:
+    for original in _side_alias_sources(event, side):
+        _set_alias_forever(original, ru_name)
+
+
+def _match_names_edit_prompt(chat_id: int, match: Dict[str, Any]) -> str:
+    home = _display_side_name(match.get("home_name"))
+    away = _display_side_name(match.get("away_name"))
+    return (
+        "Пришли правильные фамилии в этом же порядке: двумя строками или через /.\n"
+        f"Сейчас: {home} / {away}\n"
+        "Пример: Соболенко / Осака\n\n"
+        "Я сохраню исправление в базу и буду использовать его дальше. Отмена: /cancel"
+    )
+
+
+def _handle_match_names_edit(chat_id: int, text: str, payload: Dict[str, Any]) -> None:
+    names = _split_names(text)
+    if not names:
+        tg_send_message(chat_id, "Не понял фамилии. Пришли двумя строками или через /, например: Соболенко / Осака")
+        return
+
+    day = _parse_day(chat_id, payload.get("day"))
+    event_id = int(payload.get("event_id") or 0)
+    match = _find_match(chat_id, event_id, day)
+    if not match:
+        clear_state(chat_id)
+        tg_send_message(chat_id, "Не нашел матч в выбранном расписании. Открой /today и выбери его заново.")
+        return
+
+    home_name, away_name = names
+    _save_side_aliases(match, "home", home_name)
+    _save_side_aliases(match, "away", away_name)
+
+    group = str(payload.get("group") or "")
+    tournament = str(payload.get("tournament_name") or "")
+    if group and tournament:
+        set_state(chat_id, "picked_tournament", {"group": group, "tournament_name": tournament, "day": day.isoformat()})
+        tg_send_message(
+            chat_id,
+            f"Сохранил навсегда: {home_name} / {away_name}",
+            reply_markup=_matches_menu(chat_id, group, tournament, day),
+        )
+    else:
+        clear_state(chat_id)
+        tg_send_message(chat_id, f"Сохранил навсегда: {home_name} / {away_name}")
+
+
 def _match_label(chat_id: int, match: Dict[str, Any], selected: bool) -> str:
     time = _fmt_ts(chat_id, match.get("start_ts"))
     status = ss.status_label(match)
@@ -563,7 +703,7 @@ def _match_label(chat_id: int, match: Dict[str, Any], selected: bool) -> str:
     parts.append(status)
     if score:
         parts.append(score)
-    parts.append(f"{match['home_name']} - {match['away_name']}")
+    parts.append(f"{_display_side_name(match.get('home_name'))} - {_display_side_name(match.get('away_name'))}")
     return _cut(" | ".join(parts), 100)
 
 
@@ -581,7 +721,12 @@ def _matches_menu(chat_id: int, group: str, tournament: str, day: Optional[dt.da
     selected = _selected_ids(chat_id, day)
     rows: List[List[Dict[str, str]]] = []
     for match in _matches_for_state(chat_id, group, tournament, day)[:100]:
-        rows.append([_btn(_match_label(chat_id, match, int(match["event_id"]) in selected), f"watch_toggle|{match['event_id']}")])
+        rows.append(
+            [
+                _btn(_match_label(chat_id, match, int(match["event_id"]) in selected), f"watch_toggle|{match['event_id']}"),
+                _btn("✏️", f"alias_match|{match['event_id']}"),
+            ]
+        )
     rows.append([_btn("Готово / мои матчи", "menu|mine")])
     rows.append([_btn("К турнирам", f"back_tours|{group}")])
     rows.append([_btn("В начало", "menu|root")])
@@ -604,7 +749,7 @@ def _my_matches_text(chat_id: int, day: Optional[dt.date] = None) -> str:
         prefix = f"{time} - " if time else ""
         tail = f" | {score}" if score else ""
         lines.append(f"- {row['tournament_name']}")
-        lines.append(f"  {prefix}{row['home_name']} - {row['away_name']} | {status}{tail}")
+        lines.append(f"  {prefix}{_display_side_name(row['home_name'])} - {_display_side_name(row['away_name'])} | {status}{tail}")
     return "\n".join(lines).strip()
 
 
@@ -614,7 +759,7 @@ def _my_matches_menu(chat_id: int, day: Optional[dt.date] = None) -> Dict[str, A
     for row in list_match_watches(chat_id, day)[:100]:
         time = _fmt_ts(chat_id, row.get("start_ts"))
         prefix = f"{time} - " if time else ""
-        rows.append([_btn(_cut(f"Убрать: {prefix}{row['home_name']} - {row['away_name']}"), f"watch_del|{row['event_id']}")])
+        rows.append([_btn(_cut(f"Убрать: {prefix}{_display_side_name(row['home_name'])} - {_display_side_name(row['away_name'])}"), f"watch_del|{row['event_id']}")])
     rows.append([_btn("В начало", "menu|root")])
     return _kb(rows)
 
@@ -640,6 +785,23 @@ def _refresh_matches_message(chat_id: int, message_id: int) -> None:
 def _handle_text(chat_id: int, text: str, user_id: Optional[int] = None) -> None:
     raw = (text or "").strip()
     state, payload = get_state(chat_id)
+    if state == "editing_match_names":
+        editor_id = payload.get("editor_id")
+        if editor_id and user_id and int(editor_id) != int(user_id):
+            return
+        if raw.lower() in {"/cancel", "cancel", "отмена"}:
+            group = str(payload.get("group") or "")
+            tournament = str(payload.get("tournament_name") or "")
+            day = _parse_day(chat_id, payload.get("day"))
+            if group and tournament:
+                set_state(chat_id, "picked_tournament", {"group": group, "tournament_name": tournament, "day": day.isoformat()})
+            else:
+                clear_state(chat_id)
+            tg_send_message(chat_id, "Ок, правка фамилий отменена.")
+            return
+        _handle_match_names_edit(chat_id, raw, payload)
+        return
+
     if state == "editing_card":
         editor_id = payload.get("editor_id")
         if editor_id and user_id and int(editor_id) != int(user_id):
@@ -732,6 +894,32 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             clear_state(chat_id)
             tg_edit_message(chat_id, message_id, "📊 Итоги игрового дня\nВыбери дату:", reply_markup=_summary_dates_menu(chat_id))
             tg_answer_callback_query(cq_id)
+            return
+
+        if data == "menu|schedule":
+            clear_state(chat_id)
+            tg_edit_message(chat_id, message_id, "📅 Расписание\nВыбери дату:", reply_markup=_schedule_dates_menu(chat_id))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sched_date|"):
+            _, day_s = data.split("|", 1)
+            day = _parse_day(chat_id, day_s)
+            set_state(chat_id, "schedule_day", {"day": day.isoformat()})
+            tg_edit_message(chat_id, message_id, _schedule_groups_title(chat_id, day), reply_markup=_schedule_groups_menu(day))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sched_group|"):
+            _, group, day_s = data.split("|", 2)
+            day = _parse_day(chat_id, day_s)
+            tours = _tournaments_map(chat_id, group, day)
+            set_state(chat_id, "picked_tour_group", {"group": group, "day": day.isoformat()})
+            tg_edit_message(chat_id, message_id, _tournaments_title(chat_id, group, day), reply_markup=_tournaments_menu(chat_id, group, day))
+            if not tours:
+                tg_answer_callback_query(cq_id, f"На {_day_label(chat_id, day)} турниров не найдено", show_alert=True)
+            else:
+                tg_answer_callback_query(cq_id)
             return
 
         if data.startswith("sum_date|"):
@@ -906,6 +1094,46 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
                 notice = "Матч добавлен. Результат придет отдельным сообщением после окончания."
             _refresh_matches_message(chat_id, message_id)
             tg_answer_callback_query(cq_id, notice)
+            return
+
+        if data.startswith("alias_match|"):
+            _, event_id_s = data.split("|", 1)
+            event_id = int(event_id_s)
+            day = _active_day(chat_id)
+            match = _find_match(chat_id, event_id, day)
+            if not match:
+                tg_answer_callback_query(cq_id, "Матч не найден в выбранном расписании", show_alert=True)
+                return
+            group, tournament, _ = _current_choice(chat_id)
+            payload: Dict[str, Any] = {"event_id": event_id, "day": day.isoformat()}
+            if group:
+                payload["group"] = group
+            if tournament:
+                payload["tournament_name"] = tournament
+            if user_id:
+                payload["editor_id"] = int(user_id)
+            set_state(chat_id, "editing_match_names", payload)
+            tg_edit_message(
+                chat_id,
+                message_id,
+                _match_names_edit_prompt(chat_id, match),
+                reply_markup=_kb([[_btn("Отмена", "alias_cancel")]]),
+            )
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data == "alias_cancel":
+            state, payload = get_state(chat_id)
+            group = str((payload or {}).get("group") or "")
+            tournament = str((payload or {}).get("tournament_name") or "")
+            day = _parse_day(chat_id, (payload or {}).get("day"))
+            if group and tournament:
+                set_state(chat_id, "picked_tournament", {"group": group, "tournament_name": tournament, "day": day.isoformat()})
+                tg_edit_message(chat_id, message_id, _matches_title(chat_id, group, tournament, day), reply_markup=_matches_menu(chat_id, group, tournament, day))
+            else:
+                clear_state(chat_id)
+                tg_edit_message(chat_id, message_id, "Правка фамилий отменена.", reply_markup=_tour_groups_menu(chat_id))
+            tg_answer_callback_query(cq_id)
             return
 
         if data.startswith("watch_resend|"):
