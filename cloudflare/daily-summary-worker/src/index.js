@@ -188,9 +188,11 @@ export default {
       try {
         const day = url.searchParams.get("day") || "";
         const forceOdds = ["1", "true", "yes", "on"].includes(String(url.searchParams.get("forceOdds") || url.searchParams.get("force") || "").toLowerCase());
+        const debug = ["1", "true", "yes", "on"].includes(String(url.searchParams.get("debug") || "").toLowerCase());
         const result = await runDailySummary(env, {
           ...(day ? { days: [day] } : {}),
-          forceOdds
+          forceOdds,
+          debug
         });
         return json({ ok: true, ...result });
       } catch (error) {
@@ -201,7 +203,7 @@ export default {
     return json({
       ok: true,
       service: "tennis-daily-summary-worker",
-      routes: ["/health", "/diag", "/run?day=YYYY-MM-DD&secret=CRON_SECRET", "/run?day=YYYY-MM-DD&forceOdds=1&secret=CRON_SECRET"]
+      routes: ["/health", "/diag", "/run?day=YYYY-MM-DD&secret=CRON_SECRET", "/run?day=YYYY-MM-DD&forceOdds=1&debug=1&secret=CRON_SECRET"]
     });
   },
 
@@ -232,10 +234,53 @@ async function runDailySummary(env, options = {}) {
       events: events.length,
       targetEvents: targetEvents.length,
       oddsSaved,
-      summariesSent
+      summariesSent,
+      ...(options.debug ? { debug: await debugDay(sql, day, events, targetEvents) } : {})
     });
   }
   return { days: out };
+}
+
+async function debugDay(sql, day, events, targetEvents) {
+  const oddsMap = await getOddsMap(sql, day);
+  const statusCounts = countBy(targetEvents, (event) => String(event.status_type || event.raw?.status?.type || "unknown").toLowerCase());
+  const sourceCounts = countBy(targetEvents, (event) => String(event.raw?.source || "unknown").toLowerCase());
+  const finished = targetEvents.filter(isFinished);
+  const withResultLine = finished.filter((event) => resultLine(event));
+  const withFlashscoreId = withResultLine.filter((event) => flashscoreMatchId(event));
+  const missingOdds = withFlashscoreId.filter((event) => !oddsMap.has(event.event_id));
+  return {
+    events: events.length,
+    targetEvents: targetEvents.length,
+    statusCounts,
+    sourceCounts,
+    finishedTargetEvents: finished.length,
+    withResultLine: withResultLine.length,
+    withFlashscoreId: withFlashscoreId.length,
+    oddsRows: oddsMap.size,
+    usableOddsRows: [...oddsMap.values()].filter((row) => row?.home_odds && row?.away_odds).length,
+    missingFlashscoreOdds: missingOdds.length,
+    samples: targetEvents.slice(0, 12).map((event) => ({
+      event_id: event.event_id,
+      custom_id: event.custom_id || "",
+      raw_source: event.raw?.source || "",
+      raw_flashscore_id: event.raw?.flashscore_id || "",
+      status_type: event.status_type || "",
+      home_name: event.home_name || "",
+      away_name: event.away_name || "",
+      has_result_line: Boolean(resultLine(event)),
+      flashscore_match_id: flashscoreMatchId(event)
+    }))
+  };
+}
+
+function countBy(items, keyFn) {
+  const out = {};
+  for (const item of items) {
+    const key = keyFn(item) || "unknown";
+    out[key] = (out[key] || 0) + 1;
+  }
+  return out;
 }
 
 function db(env) {
