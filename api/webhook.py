@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from db_pg import (
     add_match_watch,
     clear_state,
     ensure_schema,
+    get_summary_review,
     get_events_cache,
     get_result_card,
     get_state,
@@ -23,15 +25,19 @@ from db_pg import (
     mark_match_notified,
     remove_match_watch,
     ru_name_for,
+    save_summary_review,
     set_alias,
     set_events_cache,
+    set_summary_review_message,
     set_state,
     set_tz,
+    update_summary_review_overrides,
     update_result_card,
 )
 from daily_summary import (
     build_daily_summary_for_tournament,
     mark_daily_summary_for_tournament,
+    summary_events_for_tournament,
     summary_tournaments_for_menu,
 )
 from providers import sofascore as ss
@@ -75,13 +81,13 @@ def _send_result(chat_id: int, event: Dict[str, Any]) -> bool:
     )
 
 
-def _post_json(url: str, payload: Dict[str, Any]) -> bool:
+def _request_json(url: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            resp.read()
-        return True
+            body = resp.read().decode("utf-8", "replace")
+        return json.loads(body) if body else {"ok": True}
     except urllib.error.HTTPError as exc:
         body = ""
         try:
@@ -89,22 +95,36 @@ def _post_json(url: str, payload: Dict[str, Any]) -> bool:
         except Exception:
             body = "<body read failed>"
         print(f"[tg] request failed: status={exc.code} body={body}")
-        return False
+        return None
     except urllib.error.URLError as exc:
         print(f"[tg] request failed: {exc}")
-        return False
+        return None
+
+
+def _post_json(url: str, payload: Dict[str, Any]) -> bool:
+    data = _request_json(url, payload)
+    return bool(data and data.get("ok", True))
 
 
 def tg_send_message(chat_id: int | str, text: str, reply_markup: Optional[dict] = None) -> bool:
+    return bool(tg_send_message_result(chat_id, text, reply_markup=reply_markup))
+
+
+def tg_send_message_result(chat_id: int | str, text: str, reply_markup: Optional[dict] = None) -> Optional[Dict[str, Any]]:
     if not BOT_TOKEN:
-        return False
+        return None
     payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    return _post_json(_tg_api("sendMessage"), payload)
+    return _request_json(_tg_api("sendMessage"), payload)
 
 
-def tg_edit_message(chat_id: int, message_id: int, text: str, reply_markup: Optional[dict] = None) -> None:
+def tg_send_chat_action(chat_id: int | str, action: str = "typing") -> None:
+    if BOT_TOKEN:
+        _post_json(_tg_api("sendChatAction"), {"chat_id": chat_id, "action": action})
+
+
+def tg_edit_message(chat_id: int | str, message_id: int, text: str, reply_markup: Optional[dict] = None) -> None:
     if not BOT_TOKEN:
         return
     payload: Dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text}
@@ -161,6 +181,17 @@ def _day_label(chat_id: int, day: dt.date) -> str:
     if day == today + dt.timedelta(days=1):
         return "завтра"
     return day.strftime("%d.%m.%Y")
+
+
+def _day_label_full(chat_id: int, day: dt.date) -> str:
+    return f"{_day_label(chat_id, day)} ({day.isoformat()})"
+
+
+def _relative_day(chat_id: int, value: str) -> dt.date:
+    today = _today(chat_id)
+    if value == "yesterday":
+        return today - dt.timedelta(days=1)
+    return today
 
 
 def _fmt_ts(chat_id: int, ts: Optional[int]) -> str:
@@ -441,13 +472,11 @@ def _tour_groups_menu(chat_id: int) -> Dict[str, Any]:
 
 
 def _schedule_dates_menu(chat_id: int) -> Dict[str, Any]:
-    today = _today(chat_id)
-    yesterday = today - dt.timedelta(days=1)
     return _kb(
         [
             [
-                _btn("Сегодня", f"sched_date|{today.isoformat()}"),
-                _btn("Вчера", f"sched_date|{yesterday.isoformat()}"),
+                _btn("Сегодня", "sched_date_rel|today"),
+                _btn("Вчера", "sched_date_rel|yesterday"),
             ],
             [_btn("Назад", "menu|root")],
         ]
@@ -455,7 +484,7 @@ def _schedule_dates_menu(chat_id: int) -> Dict[str, Any]:
 
 
 def _schedule_groups_title(chat_id: int, day: dt.date) -> str:
-    return f"📅 Расписание - {_day_label(chat_id, day)}\nВыбери тур:"
+    return f"📅 Расписание - {_day_label_full(chat_id, day)}\nВыбери тур:"
 
 
 def _schedule_groups_menu(day: dt.date) -> Dict[str, Any]:
@@ -477,7 +506,7 @@ def _tournaments_map(chat_id: int, group: str, day: Optional[dt.date] = None) ->
 
 
 def _tournaments_title(chat_id: int, group: str, day: dt.date) -> str:
-    return f"{ss.tour_label(group)} - {_day_label(chat_id, day)}\nВыбери турнир:"
+    return f"{ss.tour_label(group)} - {_day_label_full(chat_id, day)}\nВыбери турнир:"
 
 
 def _date_nav_buttons(chat_id: int, group: str, day: dt.date) -> List[Dict[str, str]]:
@@ -510,13 +539,11 @@ def _tournaments_menu(chat_id: int, group: str, day: Optional[dt.date] = None) -
 
 
 def _summary_dates_menu(chat_id: int) -> Dict[str, Any]:
-    today = _today(chat_id)
-    yesterday = today - dt.timedelta(days=1)
     return _kb(
         [
             [
-                _btn("Сегодня", f"sum_date|{today.isoformat()}"),
-                _btn("Вчера", f"sum_date|{yesterday.isoformat()}"),
+                _btn("Сегодня", "sum_date_rel|today"),
+                _btn("Вчера", "sum_date_rel|yesterday"),
             ],
             [_btn("Назад", "menu|root")],
         ]
@@ -524,7 +551,7 @@ def _summary_dates_menu(chat_id: int) -> Dict[str, Any]:
 
 
 def _summary_groups_title(chat_id: int, day: dt.date) -> str:
-    return f"📊 Итоги игрового дня - {_day_label(chat_id, day)}\nВыбери тур:"
+    return f"📊 Итоги игрового дня - {_day_label_full(chat_id, day)}\nВыбери тур:"
 
 
 def _summary_groups_menu(chat_id: int, day: dt.date) -> Dict[str, Any]:
@@ -549,7 +576,7 @@ def _summary_tournaments_map(chat_id: int, group: str, day: dt.date) -> List[Dic
 
 
 def _summary_tournaments_title(chat_id: int, group: str, day: dt.date) -> str:
-    return f"📊 {_day_label(chat_id, day).capitalize()} - {ss.tour_label(group).lower()}\nВыбери турнир:"
+    return f"📊 {_day_label_full(chat_id, day).capitalize()} - {ss.tour_label(group).lower()}\nВыбери турнир:"
 
 
 def _summary_tournament_label(item: Dict[str, Any]) -> str:
@@ -580,7 +607,7 @@ def _summary_tournament_title(chat_id: int, group: str, day: dt.date, item: Dict
     odds = "коэффициенты есть" if item.get("has_odds") else "коэффициентов нет"
     return (
         f"📊 {title}\n"
-        f"{ss.tour_label(group)} - {_day_label(chat_id, day)}\n"
+        f"{ss.tour_label(group)} - {_day_label_full(chat_id, day)}\n"
         f"{item.get('finished_count', 0)}/{item.get('matches_count', 0)} завершено, {state}, {odds}."
     )
 
@@ -605,6 +632,89 @@ def _summary_publish_confirm_menu(group: str, day: dt.date, idx: int) -> Dict[st
             [_btn("К турнирам", f"sum_group|{group}|{day.isoformat()}")],
         ]
     )
+
+
+SUMMARY_CATEGORY_LABELS = {
+    "unexpected": "⚡ Сенсации",
+    "expected": "👌🏻 Ожидаемо",
+    "pickem": "🟰 50/50",
+    "sad": "😥 Грустно",
+    "no_odds": "Без коэффициентов",
+}
+
+
+def _summary_id(day: dt.date, group: str, tournament: str, status: str) -> str:
+    raw = "|".join([day.isoformat(), group or "", tournament or "", status or "", os.urandom(4).hex()])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _summary_review_menu(summary_id: str) -> Dict[str, Any]:
+    return _kb(
+        [
+            [_btn("✏️ Редактировать итог", f"sum_edit|{summary_id}")],
+        ]
+    )
+
+
+def _summary_edit_menu(summary_id: str) -> Dict[str, Any]:
+    return _kb(
+        [
+            [_btn("Фамилии", f"sum_names_menu|{summary_id}")],
+            [_btn("Перенести матч в раздел", f"sum_move_menu|{summary_id}")],
+            [_btn("Назад к итогу", f"sum_back|{summary_id}")],
+        ]
+    )
+
+
+def _summary_event_label(event: Dict[str, Any]) -> str:
+    score = ss.compact_score(event)
+    tail = f" | {score}" if score else ""
+    return _cut(f"{_display_side_name(event.get('home_name'))} - {_display_side_name(event.get('away_name'))}{tail}", 88)
+
+
+def _summary_events_menu(summary_id: str, action: str, events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    rows: List[List[Dict[str, str]]] = []
+    for idx, event in enumerate(events[:80], start=1):
+        rows.append([_btn(_summary_event_label(event), f"{action}|{summary_id}|{idx}")])
+    rows.append([_btn("Назад", f"sum_edit|{summary_id}")])
+    return _kb(rows)
+
+
+def _summary_category_menu(summary_id: str, idx: int) -> Dict[str, Any]:
+    rows = [[_btn(label, f"sum_setcat|{summary_id}|{idx}|{key}")] for key, label in SUMMARY_CATEGORY_LABELS.items()]
+    rows.append([_btn("Назад", f"sum_move_menu|{summary_id}")])
+    return _kb(rows)
+
+
+def _summary_review_text(review: Dict[str, Any]) -> str:
+    text, _status, _stage = build_daily_summary_for_tournament(
+        review["day"],
+        review.get("events") or [],
+        str(review.get("tour_group") or ""),
+        str(review.get("tournament_name") or ""),
+        str(review.get("tournament_status") or ""),
+        overrides=review.get("overrides") or {},
+    )
+    return text
+
+
+def _refresh_summary_review(summary_id: str, reply_markup: Optional[dict] = None) -> bool:
+    review = get_summary_review(summary_id)
+    if not review or not review.get("message_id"):
+        return False
+    text = _summary_review_text(review)
+    if not text:
+        return False
+    tg_edit_message(str(review["chat_id"]), int(review["message_id"]), text, reply_markup=reply_markup or _summary_review_menu(summary_id))
+    return True
+
+
+def _summary_event_by_index(review: Dict[str, Any], idx: int) -> Optional[Dict[str, Any]]:
+    events = review.get("events") or []
+    pos = idx - 1
+    if pos < 0 or pos >= len(events):
+        return None
+    return events[pos]
 
 
 def _alias_or_original(name: Any) -> str:
@@ -810,6 +920,33 @@ def _handle_text(chat_id: int, text: str, user_id: Optional[int] = None) -> None
         _handle_match_names_edit(chat_id, raw, payload)
         return
 
+    if state == "editing_summary_names":
+        editor_id = payload.get("editor_id")
+        if editor_id and user_id and int(editor_id) != int(user_id):
+            return
+        summary_id = str(payload.get("summary_id") or "")
+        if raw.lower() in {"/cancel", "cancel", "отмена"}:
+            clear_state(chat_id)
+            tg_send_message(chat_id, "Ок, правка итогов отменена.")
+            return
+        names = _split_names(raw)
+        review = get_summary_review(summary_id)
+        event = _summary_event_by_index(review or {}, int(payload.get("idx") or 0)) if review else None
+        if not names:
+            tg_send_message(chat_id, "Не понял фамилии. Пришли двумя строками или через /, например: Фонсека / Меншик")
+            return
+        if not review or not event:
+            clear_state(chat_id)
+            tg_send_message(chat_id, "Не нашел этот итог для редактирования.")
+            return
+        home_name, away_name = names
+        _save_side_aliases(event, "home", home_name)
+        _save_side_aliases(event, "away", away_name)
+        _refresh_summary_review(summary_id)
+        clear_state(chat_id)
+        tg_send_message(chat_id, f"Сохранил фамилии и обновил итог: {home_name} / {away_name}")
+        return
+
     if state == "editing_card":
         editor_id = payload.get("editor_id")
         if editor_id and user_id and int(editor_id) != int(user_id):
@@ -918,6 +1055,14 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             tg_answer_callback_query(cq_id)
             return
 
+        if data.startswith("sched_date_rel|"):
+            _, rel = data.split("|", 1)
+            day = _relative_day(chat_id, rel)
+            set_state(chat_id, "schedule_day", {"day": day.isoformat()})
+            tg_edit_message(chat_id, message_id, _schedule_groups_title(chat_id, day), reply_markup=_schedule_groups_menu(day))
+            tg_answer_callback_query(cq_id)
+            return
+
         if data.startswith("sched_group|"):
             _, group, day_s = data.split("|", 2)
             day = _parse_day(chat_id, day_s)
@@ -933,6 +1078,14 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
         if data.startswith("sum_date|"):
             _, day_s = data.split("|", 1)
             day = _parse_day(chat_id, day_s)
+            set_state(chat_id, "summary_day", {"day": day.isoformat()})
+            tg_edit_message(chat_id, message_id, _summary_groups_title(chat_id, day), reply_markup=_summary_groups_menu(chat_id, day))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_date_rel|"):
+            _, rel = data.split("|", 1)
+            day = _relative_day(chat_id, rel)
             set_state(chat_id, "summary_day", {"day": day.isoformat()})
             tg_edit_message(chat_id, message_id, _summary_groups_title(chat_id, day), reply_markup=_summary_groups_menu(chat_id, day))
             tg_answer_callback_query(cq_id)
@@ -1015,11 +1168,131 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             if not text:
                 tg_answer_callback_query(cq_id, "Не получилось собрать текст итогов", show_alert=True)
                 return
-            if tg_send_message(_publish_chat_id(chat_id), text):
+            publish_chat_id = _publish_chat_id(chat_id)
+            tg_answer_callback_query(cq_id, "Собираю результаты...")
+            tg_send_chat_action(publish_chat_id, "typing")
+            tg_edit_message(chat_id, message_id, "Собираю результаты и отправляю итог в группу...")
+            summary_id = _summary_id(day, group, str(item.get("tournament_name") or ""), str(item.get("tournament_status") or ""))
+            events = summary_events_for_tournament(
+                _load_events_for_chat(chat_id, day),
+                group,
+                str(item.get("tournament_name") or ""),
+                str(item.get("tournament_status") or ""),
+            )
+            save_summary_review(
+                summary_id,
+                publish_chat_id,
+                chat_id,
+                None,
+                day,
+                group,
+                str(item.get("tournament_name") or ""),
+                str(item.get("tournament_status") or ""),
+                stage,
+                events,
+            )
+            response = tg_send_message_result(publish_chat_id, text, reply_markup=_summary_review_menu(summary_id))
+            message_id_sent = (response or {}).get("result", {}).get("message_id") if response else None
+            if response and message_id_sent:
+                set_summary_review_message(summary_id, int(message_id_sent))
                 mark_daily_summary_for_tournament(day, group, str(item.get("tournament_name") or ""), status, stage)
-                tg_answer_callback_query(cq_id, "Итоги отправлены")
+                tg_edit_message(chat_id, message_id, "Итоги отправлены.", reply_markup=_summary_tournament_menu(group, day, idx + 1))
             else:
-                tg_answer_callback_query(cq_id, "Не смог отправить итоги", show_alert=True)
+                tg_edit_message(chat_id, message_id, "Не смог отправить итоги.", reply_markup=_summary_tournament_menu(group, day, idx + 1))
+            return
+
+        if data.startswith("sum_edit|"):
+            _, summary_id = data.split("|", 1)
+            review = get_summary_review(summary_id)
+            if not review:
+                tg_answer_callback_query(cq_id, "Итог не найден", show_alert=True)
+                return
+            tg_edit_message(chat_id, message_id, _summary_review_text(review), reply_markup=_summary_edit_menu(summary_id))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_back|"):
+            _, summary_id = data.split("|", 1)
+            review = get_summary_review(summary_id)
+            if not review:
+                tg_answer_callback_query(cq_id, "Итог не найден", show_alert=True)
+                return
+            tg_edit_message(chat_id, message_id, _summary_review_text(review), reply_markup=_summary_review_menu(summary_id))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_names_menu|"):
+            _, summary_id = data.split("|", 1)
+            review = get_summary_review(summary_id)
+            if not review:
+                tg_answer_callback_query(cq_id, "Итог не найден", show_alert=True)
+                return
+            tg_edit_message(chat_id, message_id, "Выбери матч, где нужно поправить фамилии:", reply_markup=_summary_events_menu(summary_id, "sum_names", review.get("events") or []))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_move_menu|"):
+            _, summary_id = data.split("|", 1)
+            review = get_summary_review(summary_id)
+            if not review:
+                tg_answer_callback_query(cq_id, "Итог не найден", show_alert=True)
+                return
+            tg_edit_message(chat_id, message_id, "Выбери матч, который нужно перенести в другой раздел:", reply_markup=_summary_events_menu(summary_id, "sum_move", review.get("events") or []))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_names|"):
+            _, summary_id, idx_s = data.split("|", 2)
+            review = get_summary_review(summary_id)
+            idx = int(idx_s)
+            event = _summary_event_by_index(review or {}, idx) if review else None
+            if not review or not event:
+                tg_answer_callback_query(cq_id, "Матч не найден", show_alert=True)
+                return
+            payload: Dict[str, Any] = {"summary_id": summary_id, "idx": idx}
+            if user_id:
+                payload["editor_id"] = int(user_id)
+            set_state(chat_id, "editing_summary_names", payload)
+            tg_send_message(
+                chat_id,
+                (
+                    "Пришли правильные фамилии в этом порядке: двумя строками или через /.\n"
+                    f"Сейчас: {_display_side_name(event.get('home_name'))} / {_display_side_name(event.get('away_name'))}\n"
+                    "Пример: Фонсека / Меншик\n\n"
+                    "Отмена: /cancel"
+                ),
+            )
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_move|"):
+            _, summary_id, idx_s = data.split("|", 2)
+            review = get_summary_review(summary_id)
+            idx = int(idx_s)
+            event = _summary_event_by_index(review or {}, idx) if review else None
+            if not review or not event:
+                tg_answer_callback_query(cq_id, "Матч не найден", show_alert=True)
+                return
+            tg_edit_message(chat_id, message_id, f"Куда перенести матч?\n{_summary_event_label(event)}", reply_markup=_summary_category_menu(summary_id, idx))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("sum_setcat|"):
+            _, summary_id, idx_s, category = data.split("|", 3)
+            review = get_summary_review(summary_id)
+            idx = int(idx_s)
+            event = _summary_event_by_index(review or {}, idx) if review else None
+            if not review or not event or category not in SUMMARY_CATEGORY_LABELS:
+                tg_answer_callback_query(cq_id, "Не получилось перенести матч", show_alert=True)
+                return
+            event_id = str(int(event["event_id"]))
+            overrides = review.get("overrides") or {}
+            item = overrides.get(event_id) if isinstance(overrides.get(event_id), dict) else {}
+            item["category"] = category
+            overrides[event_id] = item
+            update_summary_review_overrides(summary_id, overrides)
+            _refresh_summary_review(summary_id, reply_markup=_summary_review_menu(summary_id))
+            tg_answer_callback_query(cq_id, f"Перенесено: {SUMMARY_CATEGORY_LABELS[category]}")
             return
 
         if data == "menu|mine":

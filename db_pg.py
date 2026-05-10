@@ -101,6 +101,22 @@ def ensure_schema() -> None:
         stage text not null default '',
         sent_at timestamptz not null default now()
     );
+
+    create table if not exists summary_reviews (
+        summary_id text primary key,
+        chat_id text not null,
+        message_id bigint,
+        source_chat_id bigint,
+        day date not null,
+        tour_group text not null,
+        tournament_name text not null,
+        tournament_status text not null,
+        stage text not null default '',
+        event_data jsonb not null,
+        overrides jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+    );
     """
     with _conn() as con, con.cursor() as cur:
         cur.execute(sql)
@@ -566,4 +582,99 @@ def mark_daily_summary_sent(summary_key: str, day: dt.date, tour_group: str, tou
                 tournament_status or "",
                 stage or "",
             ),
+        )
+
+
+def save_summary_review(
+    summary_id: str,
+    chat_id: int | str,
+    source_chat_id: int,
+    message_id: Optional[int],
+    day: dt.date,
+    tour_group: str,
+    tournament_name: str,
+    tournament_status: str,
+    stage: str,
+    events: List[Dict[str, Any]],
+    overrides: Optional[Dict[str, Any]] = None,
+) -> None:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            insert into summary_reviews (
+                summary_id, chat_id, source_chat_id, message_id, day, tour_group,
+                tournament_name, tournament_status, stage, event_data, overrides, updated_at
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, now())
+            on conflict (summary_id) do update
+            set chat_id=excluded.chat_id,
+                source_chat_id=excluded.source_chat_id,
+                message_id=excluded.message_id,
+                day=excluded.day,
+                tour_group=excluded.tour_group,
+                tournament_name=excluded.tournament_name,
+                tournament_status=excluded.tournament_status,
+                stage=excluded.stage,
+                event_data=excluded.event_data,
+                overrides=excluded.overrides,
+                updated_at=now()
+            """,
+            (
+                summary_id,
+                str(chat_id),
+                int(source_chat_id),
+                int(message_id) if message_id else None,
+                day,
+                tour_group or "",
+                tournament_name or "",
+                tournament_status or "",
+                stage or "",
+                json.dumps(events, default=str),
+                json.dumps(overrides or {}),
+            ),
+        )
+
+
+def set_summary_review_message(summary_id: str, message_id: int) -> None:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            "update summary_reviews set message_id=%s, updated_at=now() where summary_id=%s",
+            (int(message_id), (summary_id or "").strip()),
+        )
+
+
+def get_summary_review(summary_id: str) -> Optional[Dict[str, Any]]:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            select summary_id, chat_id, message_id, source_chat_id, day, tour_group,
+                   tournament_name, tournament_status, stage, event_data, overrides
+            from summary_reviews
+            where summary_id=%s
+            """,
+            ((summary_id or "").strip(),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "summary_id": row[0],
+            "chat_id": row[1],
+            "message_id": row[2],
+            "source_chat_id": row[3],
+            "day": row[4],
+            "tour_group": row[5],
+            "tournament_name": row[6],
+            "tournament_status": row[7],
+            "stage": row[8],
+            "events": row[9] or [],
+            "overrides": row[10] or {},
+        }
+
+
+def update_summary_review_overrides(summary_id: str, overrides: Dict[str, Any]) -> None:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            "update summary_reviews set overrides=%s::jsonb, updated_at=now() where summary_id=%s",
+            (json.dumps(overrides or {}), (summary_id or "").strip()),
         )

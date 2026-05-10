@@ -396,6 +396,7 @@ def _alias_or_name(name: str) -> str:
 def _short_player(part: str) -> str:
     text = " ".join(str(part or "").replace("\u00a0", " ").split())
     text = re.sub(r"\s+[A-ZА-ЯЁ]\.(?:\s*-\s*[A-ZА-ЯЁ]\.)?$", "", text).strip()
+    text = re.sub(r"\s+(?:Дж|Ж|Х|М|Н|С|J|H|M|N|S)$", "", text).strip()
     text = re.sub(r"^([A-ZА-ЯЁ])\.\s*(\S+)$", r"\1.\2", text).strip()
     return text
 
@@ -438,7 +439,11 @@ def _category_for(event: Dict[str, Any], odds: Optional[Dict[str, Any]]) -> str:
     if abs(home_prob - away_prob) <= pickem_margin:
         return "pickem"
     favorite = "home" if home_odds < away_odds else "away"
-    return "expected" if winner == favorite else "unexpected"
+    if winner == favorite:
+        return "expected"
+    upset_min_odds = float(os.getenv("SUMMARY_UPSET_MIN_ODDS") or "3.0")
+    winner_odds = home_odds if winner == "home" else away_odds
+    return "unexpected" if winner_odds >= upset_min_odds else "expected"
 
 
 def _float_or_none(value: Any) -> Optional[float]:
@@ -475,14 +480,27 @@ def _header(tournament: str, group: str, stage: str) -> str:
     return f"{emoji} {tournament}, {gender}, {stage.lower() if stage else 'игровой день'}"
 
 
-def _build_summary_text(day: dt.date, group: str, tournament: str, stage: str, events: List[Dict[str, Any]], odds_map: Dict[int, Dict[str, Any]]) -> str:
+def _build_summary_text(
+    day: dt.date,
+    group: str,
+    tournament: str,
+    stage: str,
+    events: List[Dict[str, Any]],
+    odds_map: Dict[int, Dict[str, Any]],
+    overrides: Optional[Dict[str, Any]] = None,
+) -> str:
     buckets: Dict[str, List[str]] = defaultdict(list)
+    overrides = overrides or {}
     for event in sorted(events, key=lambda x: (x.get("start_ts") or 0, x.get("home_name") or "")):
         line = _result_line(event)
         if not line:
             continue
-        odds = odds_map.get(int(event["event_id"]))
-        category = _category_for(event, odds)
+        event_id = int(event["event_id"])
+        odds = odds_map.get(event_id)
+        override = overrides.get(str(event_id)) or {}
+        category = str(override.get("category") or "") if isinstance(override, dict) else ""
+        if category not in {"expected", "pickem", "unexpected", "sad", "no_odds"}:
+            category = _category_for(event, odds)
         if category == "unexpected":
             line = _line_with_average_odds(event, line, odds)
         buckets[category].append(line)
@@ -553,8 +571,23 @@ def build_daily_summary_for_tournament(
     group: str,
     tournament: str,
     status: str = "",
+    overrides: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, str, str]:
-    rows = [
+    rows = summary_events_for_tournament(events, group, tournament, status)
+    if not rows:
+        return "", "", ""
+    stage = _common_stage(rows)
+    odds_map = get_match_odds_map([int(event["event_id"]) for event in rows if event.get("event_id")])
+    return _build_summary_text(day, group, tournament, stage, rows, odds_map, overrides=overrides), status or "", stage
+
+
+def summary_events_for_tournament(
+    events: List[Dict[str, Any]],
+    group: str,
+    tournament: str,
+    status: str = "",
+) -> List[Dict[str, Any]]:
+    return [
         event
         for event in events
         if _is_target_event(event)
@@ -562,11 +595,6 @@ def build_daily_summary_for_tournament(
         and str(event.get("tournament_name") or "") == str(tournament or "")
         and (not status or str(event.get("tournament_status") or "") == str(status or ""))
     ]
-    if not rows:
-        return "", "", ""
-    stage = _common_stage(rows)
-    odds_map = get_match_odds_map([int(event["event_id"]) for event in rows if event.get("event_id")])
-    return _build_summary_text(day, group, tournament, stage, rows, odds_map), status or "", stage
 
 
 def mark_daily_summary_for_tournament(day: dt.date, group: str, tournament: str, status: str, stage: str) -> None:
