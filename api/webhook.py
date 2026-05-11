@@ -858,7 +858,6 @@ def _matches_menu(chat_id: int, group: str, tournament: str, day: Optional[dt.da
         rows.append(
             [
                 _btn(_match_label(chat_id, match, int(match["event_id"]) in selected), f"watch_toggle|{match['event_id']}"),
-                _btn("✏️", f"alias_match|{match['event_id']}"),
             ]
         )
     rows.append([_btn("Готово / мои матчи", "menu|mine")])
