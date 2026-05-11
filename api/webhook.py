@@ -426,12 +426,14 @@ def _handle_card_photo_upload(chat_id: int, msg: Dict[str, Any], payload: Dict[s
     return True
 
 
-def _load_events_for_chat(chat_id: int, day: Optional[dt.date] = None) -> List[Dict[str, Any]]:
+def _load_events_for_chat(chat_id: int, day: Optional[dt.date] = None, *, force_refresh: bool = False) -> List[Dict[str, Any]]:
     day = day or _active_day(chat_id)
-    data = get_events_cache(day) or {"events": []}
-    events = ss.normalize_events(data)
-    if events and data.get("source") == "flashscore":
-        return events
+    events: List[Dict[str, Any]] = []
+    if not force_refresh:
+        data = get_events_cache(day) or {"events": []}
+        events = ss.normalize_events(data)
+        if events and data.get("source") == "flashscore":
+            return events
 
     try:
         print(f"[events] fetching flashscore for {day}")
@@ -441,6 +443,8 @@ def _load_events_for_chat(chat_id: int, day: Optional[dt.date] = None) -> List[D
         print(f"[events] fetched for {day}: raw={len(data.get('events', []) or [])} normalized={len(events)}")
     except Exception as exc:
         print(f"[events] fetch failed for {day}: {exc}")
+        data = get_events_cache(day) or {"events": []}
+        events = ss.normalize_events(data)
     return events
 
 
@@ -570,7 +574,7 @@ def _summary_groups_menu(chat_id: int, day: dt.date) -> Dict[str, Any]:
 def _summary_tournaments_map(chat_id: int, group: str, day: dt.date) -> List[Dict[str, Any]]:
     return [
         item
-        for item in summary_tournaments_for_menu(_load_events_for_chat(chat_id, day))
+        for item in summary_tournaments_for_menu(_load_events_for_chat(chat_id, day, force_refresh=True))
         if item.get("tour_group") == group
     ]
 
@@ -636,6 +640,7 @@ def _summary_publish_confirm_menu(group: str, day: dt.date, idx: int) -> Dict[st
 
 SUMMARY_CATEGORY_LABELS = {
     "unexpected": "⚡ Сенсации",
+    "surprise": "⚡ Неожиданно",
     "expected": "👌🏻 Ожидаемо",
     "pickem": "🟰 50/50",
     "sad": "😥 Грустно",
@@ -1169,9 +1174,10 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
                 )
                 tg_answer_callback_query(cq_id)
                 return
+            fresh_events = _load_events_for_chat(chat_id, day, force_refresh=True)
             text, status, stage = build_daily_summary_for_tournament(
                 day,
-                _load_events_for_chat(chat_id, day),
+                fresh_events,
                 group,
                 str(item.get("tournament_name") or ""),
                 str(item.get("tournament_status") or ""),
@@ -1185,7 +1191,7 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             tg_edit_message(chat_id, message_id, "Собираю результаты и отправляю итог в группу...")
             summary_id = _summary_id(day, group, str(item.get("tournament_name") or ""), str(item.get("tournament_status") or ""))
             events = summary_events_for_tournament(
-                _load_events_for_chat(chat_id, day),
+                fresh_events,
                 group,
                 str(item.get("tournament_name") or ""),
                 str(item.get("tournament_status") or ""),

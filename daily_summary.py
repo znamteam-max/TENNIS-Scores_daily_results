@@ -26,7 +26,8 @@ from providers import sofascore as ss
 
 
 TARGET_RANKS = {0, 1, 2, 3}
-TARGET_CATEGORIES = {"ATP"}
+TARGET_CATEGORIES = {"ATP", "WTA"}
+AUTO_TARGET_CATEGORIES = {"ATP"}
 RUSSIAN_NAME_HINTS = {
     "медведев",
     "рублев",
@@ -260,8 +261,9 @@ def _is_doubles(event: Dict[str, Any]) -> bool:
     return "парн" in hay or "doubles" in hay
 
 
-def _is_target_event(event: Dict[str, Any]) -> bool:
-    if event.get("category") not in TARGET_CATEGORIES:
+def _is_target_event(event: Dict[str, Any], *, automatic: bool = False) -> bool:
+    target_categories = AUTO_TARGET_CATEGORIES if automatic else TARGET_CATEGORIES
+    if event.get("category") not in target_categories:
         return False
     try:
         if int(event.get("tournament_sort_rank", 9)) not in TARGET_RANKS:
@@ -441,9 +443,14 @@ def _category_for(event: Dict[str, Any], odds: Optional[Dict[str, Any]]) -> str:
     favorite = "home" if home_odds < away_odds else "away"
     if winner == favorite:
         return "expected"
-    upset_min_odds = float(os.getenv("SUMMARY_UPSET_MIN_ODDS") or "3.0")
+    upset_min_odds = float(os.getenv("SUMMARY_UPSET_MIN_ODDS") or "2.70")
+    surprise_min_odds = float(os.getenv("SUMMARY_UNEXPECTED_MIN_ODDS") or "2.15")
     winner_odds = home_odds if winner == "home" else away_odds
-    return "unexpected" if winner_odds >= upset_min_odds else "expected"
+    if winner_odds >= upset_min_odds:
+        return "unexpected"
+    if winner_odds >= surprise_min_odds:
+        return "surprise"
+    return "expected"
 
 
 def _float_or_none(value: Any) -> Optional[float]:
@@ -499,9 +506,9 @@ def _build_summary_text(
         odds = odds_map.get(event_id)
         override = overrides.get(str(event_id)) or {}
         category = str(override.get("category") or "") if isinstance(override, dict) else ""
-        if category not in {"expected", "pickem", "unexpected", "sad", "no_odds"}:
+        if category not in {"expected", "pickem", "unexpected", "surprise", "sad", "no_odds"}:
             category = _category_for(event, odds)
-        if category == "unexpected":
+        if category in {"unexpected", "surprise"}:
             line = _line_with_average_odds(event, line, odds)
         buckets[category].append(line)
     if not any(buckets.values()):
@@ -509,6 +516,7 @@ def _build_summary_text(
 
     sections = [
         ("unexpected", "⚡ Сенсации"),
+        ("surprise", "⚡ Неожиданно"),
         ("expected", "👌🏻 Ожидаемо"),
         ("pickem", "🟰Когда шансы 50/50"),
         ("sad", "😥  Грустно"),
@@ -607,6 +615,7 @@ def publish_daily_summaries(day: dt.date, events: List[Dict[str, Any]], bot_toke
     sent = 0
     odds_map = get_match_odds_map([int(event["event_id"]) for event in events if event.get("event_id")])
     for group, tournament, status, rows in _target_groups(events):
+        rows = [event for event in rows if _is_target_event(event, automatic=True)]
         if not rows or not all(ss.is_finished(event) for event in rows):
             continue
         if _requires_odds() and not any(odds_map.get(int(event["event_id"])) for event in rows):
