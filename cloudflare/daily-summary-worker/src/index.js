@@ -966,16 +966,12 @@ function categoryFor(env, event, odds) {
   if (winner === favorite) {
     return "expected";
   }
-  const upsetMinOdds = Number(env.SUMMARY_UPSET_MIN_ODDS || 2.7);
-  const surpriseMinOdds = Number(env.SUMMARY_UNEXPECTED_MIN_ODDS || 2.15);
   const winnerOdds = winner === "home" ? homeOdds : awayOdds;
+  const upsetMinOdds = Number(env.SUMMARY_UPSET_MIN_ODDS || 2.7);
   if (winnerOdds >= upsetMinOdds) {
     return "unexpected";
   }
-  if (winnerOdds >= surpriseMinOdds) {
-    return "surprise";
-  }
-  return "expected";
+  return "surprise";
 }
 
 function lineWithAverageOdds(event, line, odds) {
@@ -1404,7 +1400,6 @@ function envShape(env) {
     "SUMMARY_REQUIRE_ODDS",
     "SUMMARY_PICKEM_MARGIN",
     "SUMMARY_UPSET_MIN_ODDS",
-    "SUMMARY_UNEXPECTED_MIN_ODDS",
     "FLASHSCORE_ODDS_ENABLED",
     "FLASHSCORE_ODDS_REFRESH_MINUTES",
     "FLASHSCORE_ODDS_FETCH_LIMIT",
