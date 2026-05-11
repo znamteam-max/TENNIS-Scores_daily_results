@@ -443,14 +443,11 @@ def _category_for(event: Dict[str, Any], odds: Optional[Dict[str, Any]]) -> str:
     favorite = "home" if home_odds < away_odds else "away"
     if winner == favorite:
         return "expected"
-    upset_min_odds = float(os.getenv("SUMMARY_UPSET_MIN_ODDS") or "2.70")
-    surprise_min_odds = float(os.getenv("SUMMARY_UNEXPECTED_MIN_ODDS") or "2.15")
     winner_odds = home_odds if winner == "home" else away_odds
+    upset_min_odds = float(os.getenv("SUMMARY_UPSET_MIN_ODDS") or "2.70")
     if winner_odds >= upset_min_odds:
         return "unexpected"
-    if winner_odds >= surprise_min_odds:
-        return "surprise"
-    return "expected"
+    return "surprise"
 
 
 def _float_or_none(value: Any) -> Optional[float]:
