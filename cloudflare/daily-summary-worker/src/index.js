@@ -894,6 +894,7 @@ function buildSummaryText(env, group, tournament, stage, events, oddsMap) {
     expected: [],
     pickem: [],
     unexpected: [],
+    surprise: [],
     sad: [],
     no_odds: []
   };
@@ -905,7 +906,7 @@ function buildSummaryText(env, group, tournament, stage, events, oddsMap) {
     }
     const odds = oddsMap.get(event.event_id);
     const category = categoryFor(env, event, odds);
-    buckets[category].push(category === "unexpected" ? lineWithAverageOdds(event, line, odds) : line);
+    buckets[category].push(["unexpected", "surprise"].includes(category) ? lineWithAverageOdds(event, line, odds) : line);
   }
   if (!Object.values(buckets).some((rows) => rows.length)) {
     return "";
@@ -913,6 +914,7 @@ function buildSummaryText(env, group, tournament, stage, events, oddsMap) {
 
   const sections = [
     ["unexpected", "\u26A1 \u0421\u0435\u043d\u0441\u0430\u0446\u0438\u0438"],
+    ["surprise", "\u26A1 \u041d\u0435\u043e\u0436\u0438\u0434\u0430\u043d\u043d\u043e"],
     ["expected", "\u{1F44C}\u{1F3FB} \u041e\u0436\u0438\u0434\u0430\u0435\u043c\u043e"],
     ["pickem", "\u{1F7F0}\u041a\u043e\u0433\u0434\u0430 \u0448\u0430\u043d\u0441\u044b 50/50"],
     ["sad", "\u{1F625}  \u0413\u0440\u0443\u0441\u0442\u043d\u043e"],
@@ -964,9 +966,16 @@ function categoryFor(env, event, odds) {
   if (winner === favorite) {
     return "expected";
   }
-  const upsetMinOdds = Number(env.SUMMARY_UPSET_MIN_ODDS || 3);
+  const upsetMinOdds = Number(env.SUMMARY_UPSET_MIN_ODDS || 2.7);
+  const surpriseMinOdds = Number(env.SUMMARY_UNEXPECTED_MIN_ODDS || 2.15);
   const winnerOdds = winner === "home" ? homeOdds : awayOdds;
-  return winnerOdds >= upsetMinOdds ? "unexpected" : "expected";
+  if (winnerOdds >= upsetMinOdds) {
+    return "unexpected";
+  }
+  if (winnerOdds >= surpriseMinOdds) {
+    return "surprise";
+  }
+  return "expected";
 }
 
 function lineWithAverageOdds(event, line, odds) {
@@ -1394,6 +1403,8 @@ function envShape(env) {
     "SUMMARY_ODDS_SOURCE",
     "SUMMARY_REQUIRE_ODDS",
     "SUMMARY_PICKEM_MARGIN",
+    "SUMMARY_UPSET_MIN_ODDS",
+    "SUMMARY_UNEXPECTED_MIN_ODDS",
     "FLASHSCORE_ODDS_ENABLED",
     "FLASHSCORE_ODDS_REFRESH_MINUTES",
     "FLASHSCORE_ODDS_FETCH_LIMIT",
