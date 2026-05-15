@@ -6,23 +6,19 @@
 
 See `.env.example` and `.github/workflows/tennis-poller.yml`.
 
-## Cloudflare live overlay
+## Telegram live overlay menu
 
-The Cloudflare Worker in `cloudflare/daily-summary-worker` also exposes a lightweight live tennis overlay for OBS, Streamlabs and vMix.
+The bot command `/overlay` opens a live production menu:
 
-Routes:
+1. choose a live Flashscore tennis match;
+2. choose OBS, Streamlabs, or vMix;
+3. choose `stats` or `chat` overlay mode;
+4. receive a ready Browser Source/Web Browser URL with setup steps.
 
-- `/overlay.html`
-- `/overlay.css`
-- `/overlay.js`
-- `/api/match/flashscore?id=Sril3X2m`
-- `/api/news/tennis`
-- `/api/matches`
-
-Example Browser Source URL:
+The default overlay host is:
 
 ```text
-https://tennis-daily-results.znamteam-903.workers.dev/overlay.html?source=/api/match/flashscore?id=Sril3X2m&news=/api/news/tennis&panel=stats&poll=3000
+https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev
 ```
 
-Use `panel=chat` to switch the left panel to chat mode. Add `guides=1` for layout guides while setting up a scene.
+If the overlay Worker changes, set `OVERLAY_PUBLIC_BASE_URL` in Vercel.

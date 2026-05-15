@@ -7,6 +7,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict, List, Optional
@@ -52,7 +53,13 @@ PUBLISH_CHAT_ID = (
     or os.getenv("TELEGRAM_PUBLISH_CHAT_ID")
     or ""
 ).strip()
+OVERLAY_PUBLIC_BASE_URL = (
+    os.getenv("OVERLAY_PUBLIC_BASE_URL")
+    or "https://tennis-listen-bolshe-overlay.znamteam-903.workers.dev"
+).rstrip("/")
+FLASHSCORE_MATCH_BASE_URL = (os.getenv("FLASHSCORE_MATCH_BASE_URL") or "https://www.flashscore.com").rstrip("/")
 BOT_COMMANDS = [
+    {"command": "overlay", "description": "live overlay для трансляции"},
     {"command": "start", "description": "открыть главное меню"},
     {"command": "today", "description": "выбрать матчи на сегодня"},
     {"command": "summary", "description": "опубликовать итоги игрового дня"},
@@ -461,9 +468,209 @@ def _find_match(chat_id: int, event_id: int, day: Optional[dt.date] = None) -> O
     return None
 
 
+OVERLAY_PROGRAM_LABELS = {
+    "obs": "OBS",
+    "streamlabs": "Streamlabs",
+    "vmix": "vMix",
+}
+OVERLAY_MODE_LABELS = {
+    "stats": "Статистика",
+    "chat": "Чат",
+}
+
+
+def _overlay_match_id(event: Dict[str, Any]) -> str:
+    raw = event.get("raw") or {}
+    return str(raw.get("flashscore_id") or event.get("custom_id") or "").strip()
+
+
+def _overlay_live_matches(chat_id: int) -> List[Dict[str, Any]]:
+    day = _today(chat_id)
+    matches = []
+    for event in _load_events_for_chat(chat_id, day, force_refresh=True):
+        if ss.status_type(event) == "inprogress" and _overlay_match_id(event):
+            matches.append(event)
+    return sorted(
+        matches,
+        key=lambda item: (
+            str(item.get("tournament_status") or ""),
+            str(item.get("tournament_name") or ""),
+            str(item.get("home_name") or ""),
+        ),
+    )
+
+
+def _overlay_match_by_id(chat_id: int, event_id: int) -> Optional[Dict[str, Any]]:
+    day = _today(chat_id)
+    fallback = None
+    for force_refresh in (False, True):
+        for event in _load_events_for_chat(chat_id, day, force_refresh=force_refresh):
+            if int(event["event_id"]) == int(event_id) and _overlay_match_id(event):
+                if force_refresh or _overlay_flashscore_url(event):
+                    return event
+                fallback = event
+    if fallback:
+        return fallback
+    return None
+
+
+def _overlay_match_label(event: Dict[str, Any], limit: int = 88) -> str:
+    status = ss.status_label(event)
+    score = ss.compact_score(event)
+    names = f"{_display_side_name(event.get('home_name'))} - {_display_side_name(event.get('away_name'))}"
+    bits = [bit for bit in [status, score, names] if bit]
+    return _cut(" | ".join(bits), limit)
+
+
+def _overlay_match_title(event: Dict[str, Any]) -> str:
+    tournament = str(event.get("tournament_name") or "").strip()
+    status = str(event.get("tournament_status") or "").strip()
+    place = f"{status} · {tournament}" if status and tournament else tournament or status
+    score = ss.compact_score(event)
+    names = f"{_display_side_name(event.get('home_name'))} - {_display_side_name(event.get('away_name'))}"
+    match_state = " | ".join([bit for bit in [ss.status_label(event), score] if bit])
+    return "\n".join([part for part in [place, names, match_state] if part])
+
+
+def _overlay_live_message(chat_id: int) -> tuple[str, Dict[str, Any]]:
+    matches = _overlay_live_matches(chat_id)
+    rows: List[List[Dict[str, str]]] = []
+    for event in matches[:60]:
+        rows.append([_btn(_overlay_match_label(event), f"overlay_match|{event['event_id']}")])
+    rows.append([_btn("Обновить список", "overlay|live")])
+    rows.append([_btn("В начало", "menu|root")])
+    if not matches:
+        return (
+            "🎾 Live оверлей\nСейчас live-матчи не найдены. Обнови список через минуту или проверь, что матчи уже начались.",
+            _kb(rows),
+        )
+    return ("🎾 Live оверлей\nВыбери матч для трансляции:", _kb(rows))
+
+
+def _overlay_program_menu(event: Dict[str, Any]) -> Dict[str, Any]:
+    event_id = int(event["event_id"])
+    return _kb(
+        [
+            [
+                _btn("OBS", f"overlay_program|{event_id}|obs"),
+                _btn("Streamlabs", f"overlay_program|{event_id}|streamlabs"),
+            ],
+            [_btn("vMix", f"overlay_program|{event_id}|vmix")],
+            [_btn("К live матчам", "overlay|live")],
+        ]
+    )
+
+
+def _overlay_mode_menu(event: Dict[str, Any], program_key: str) -> Dict[str, Any]:
+    event_id = int(event["event_id"])
+    return _kb(
+        [
+            [
+                _btn("Статистика", f"overlay_ready|{event_id}|{program_key}|stats"),
+                _btn("Чат", f"overlay_ready|{event_id}|{program_key}|chat"),
+            ],
+            [_btn("Другая программа", f"overlay_match|{event_id}")],
+            [_btn("К live матчам", "overlay|live")],
+        ]
+    )
+
+
+def _overlay_ready_menu(event: Dict[str, Any], program_key: str) -> Dict[str, Any]:
+    event_id = int(event["event_id"])
+    return _kb(
+        [
+            [
+                _btn("Статистика", f"overlay_ready|{event_id}|{program_key}|stats"),
+                _btn("Чат", f"overlay_ready|{event_id}|{program_key}|chat"),
+            ],
+            [_btn("Другая программа", f"overlay_match|{event_id}")],
+            [_btn("К live матчам", "overlay|live")],
+        ]
+    )
+
+
+def _overlay_competitor_path(competitor: Dict[str, Any]) -> str:
+    slug = str(competitor.get("slug") or "").strip().strip("/")
+    competitor_id = str(competitor.get("id") or "").strip()
+    if not slug or not competitor_id:
+        return ""
+    if slug.endswith(f"-{competitor_id}"):
+        return slug
+    return f"{slug}-{competitor_id}"
+
+
+def _overlay_flashscore_url(event: Dict[str, Any]) -> str:
+    match_id = _overlay_match_id(event)
+    raw = event.get("raw") or {}
+    home_path = _overlay_competitor_path(raw.get("homeCompetitor") or {})
+    away_path = _overlay_competitor_path(raw.get("awayCompetitor") or {})
+    if not match_id or not home_path or not away_path:
+        return ""
+    home_part = urllib.parse.quote(home_path, safe="-")
+    away_part = urllib.parse.quote(away_path, safe="-")
+    match_part = urllib.parse.quote(match_id, safe="")
+    return f"{FLASHSCORE_MATCH_BASE_URL}/match/tennis/{home_part}/{away_part}/?mid={match_part}"
+
+
+def _overlay_page_url(event: Dict[str, Any], mode: str) -> str:
+    match_id = _overlay_match_id(event)
+    flashscore_url = _overlay_flashscore_url(event)
+    query = urllib.parse.urlencode({"url": flashscore_url}) if flashscore_url else urllib.parse.urlencode({"id": match_id})
+    source = urllib.parse.quote(f"/api/match/flashscore?{query}", safe="")
+    news = urllib.parse.quote("/api/news/tennis", safe="")
+    return f"{OVERLAY_PUBLIC_BASE_URL}/overlay.html?source={source}&news={news}&panel={mode}&poll=3000"
+
+
+def _overlay_program_steps(program_key: str) -> List[str]:
+    if program_key == "vmix":
+        return [
+            "1. vMix: Add Input -> Web Browser.",
+            "2. Вставь URL в поле Address.",
+            "3. Размер input: 1920x1080.",
+            "4. Перед эфиром нажми Reload, если окно уже было открыто.",
+        ]
+    if program_key == "streamlabs":
+        return [
+            "1. Streamlabs: Sources -> Browser Source.",
+            "2. Вставь URL в поле URL.",
+            "3. Width 1920, Height 1080.",
+            "4. Перед эфиром нажми Refresh cache/current page.",
+        ]
+    return [
+        "1. OBS: Sources -> Browser.",
+        "2. Вставь URL в поле URL.",
+        "3. Width 1920, Height 1080.",
+        "4. Перед эфиром нажми Refresh cache/current page.",
+    ]
+
+
+def _overlay_instructions(event: Dict[str, Any], program_key: str, mode: str) -> str:
+    program = OVERLAY_PROGRAM_LABELS.get(program_key, "OBS")
+    mode_key = mode if mode in OVERLAY_MODE_LABELS else "stats"
+    url = _overlay_page_url(event, mode_key)
+    lines = [
+        "🎾 Оверлей готов",
+        "",
+        f"Матч:\n{_overlay_match_title(event)}",
+        "",
+        f"Программа: {program}",
+        f"Режим: {OVERLAY_MODE_LABELS[mode_key]}",
+        "",
+        "URL:",
+        url,
+        "",
+        "Что делать дальше:",
+        *_overlay_program_steps(program_key),
+        "",
+        "Оверлей сам обновляет данные. Если переключаешь матч, просто замени URL в источнике.",
+    ]
+    return "\n".join(lines)
+
+
 def _tour_groups_menu(chat_id: int) -> Dict[str, Any]:
     return _kb(
         [
+            [_btn("🎾 Live оверлей", "overlay|live")],
             [_btn("📅 Расписание", "menu|schedule")],
             [
                 _btn("Мужской тур сегодня", "group|men"),
@@ -983,6 +1190,13 @@ def _handle_text(chat_id: int, text: str, user_id: Optional[int] = None) -> None
         tg_send_message(chat_id, "Выбери раздел:", reply_markup=_tour_groups_menu(chat_id))
         return
 
+    if cmd in {"/overlay", "overlay"}:
+        tg_set_my_commands()
+        clear_state(chat_id)
+        text, markup = _overlay_live_message(chat_id)
+        tg_send_message(chat_id, text, reply_markup=markup)
+        return
+
     if cmd in {"/summary", "summary"}:
         tg_set_my_commands()
         clear_state(chat_id)
@@ -1004,7 +1218,7 @@ def _handle_text(chat_id: int, text: str, user_id: Optional[int] = None) -> None
             tg_send_message(chat_id, "Не смог распознать timezone. Пример: Europe/Helsinki")
         return
 
-    tg_send_message(chat_id, "Команды:\n/today - выбрать матчи\n/summary - итоги игрового дня\n/my - мои матчи\n/tz Europe/Helsinki - сменить часовой пояс")
+    tg_send_message(chat_id, "Команды:\n/today - выбрать матчи\n/overlay - live оверлей для трансляции\n/summary - итоги игрового дня\n/my - мои матчи\n/tz Europe/Helsinki - сменить часовой пояс")
 
 
 def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_id: Optional[int] = None) -> None:
@@ -1060,6 +1274,64 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             clear_state(chat_id)
             tg_edit_message(chat_id, message_id, "📅 Расписание\nВыбери дату:", reply_markup=_schedule_dates_menu(chat_id))
             tg_answer_callback_query(cq_id)
+            return
+
+        if data == "overlay|live":
+            clear_state(chat_id)
+            text, markup = _overlay_live_message(chat_id)
+            tg_edit_message(chat_id, message_id, text, reply_markup=markup)
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("overlay_match|"):
+            _, event_id_s = data.split("|", 1)
+            event = _overlay_match_by_id(chat_id, int(event_id_s))
+            if not event:
+                tg_answer_callback_query(cq_id, "Матч не найден или уже пропал из live", show_alert=True)
+                return
+            tg_edit_message(
+                chat_id,
+                message_id,
+                f"🎾 Матч выбран\n\n{_overlay_match_title(event)}\n\nВыбери программу:",
+                reply_markup=_overlay_program_menu(event),
+            )
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("overlay_program|"):
+            _, event_id_s, program_key = data.split("|", 2)
+            event = _overlay_match_by_id(chat_id, int(event_id_s))
+            if not event:
+                tg_answer_callback_query(cq_id, "Матч не найден или уже пропал из live", show_alert=True)
+                return
+            if program_key not in OVERLAY_PROGRAM_LABELS:
+                tg_answer_callback_query(cq_id, "Программа не найдена", show_alert=True)
+                return
+            tg_edit_message(
+                chat_id,
+                message_id,
+                (
+                    f"🎾 {_overlay_match_title(event)}\n\n"
+                    f"Программа: {OVERLAY_PROGRAM_LABELS[program_key]}\n"
+                    "Выбери режим оверлея:"
+                ),
+                reply_markup=_overlay_mode_menu(event, program_key),
+            )
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("overlay_ready|"):
+            _, event_id_s, program_key, mode = data.split("|", 3)
+            event = _overlay_match_by_id(chat_id, int(event_id_s))
+            if not event:
+                tg_answer_callback_query(cq_id, "Матч не найден или уже пропал из live", show_alert=True)
+                return
+            if program_key not in OVERLAY_PROGRAM_LABELS:
+                tg_answer_callback_query(cq_id, "Программа не найдена", show_alert=True)
+                return
+            text = _overlay_instructions(event, program_key, mode)
+            tg_edit_message(chat_id, message_id, text, reply_markup=_overlay_ready_menu(event, program_key))
+            tg_answer_callback_query(cq_id, "Готово")
             return
 
         if data.startswith("sched_date|"):
