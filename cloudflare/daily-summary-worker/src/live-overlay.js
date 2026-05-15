@@ -5,6 +5,7 @@ const DEFAULT_MATCH_ID = "Sril3X2m";
 const DEFAULT_MATCH_URL =
   "https://www.flashscore.com/match/tennis/jasika-omar-lOWZLw6o/stewart-hamish-0j2A0w2n/?mid=Sril3X2m";
 
+// Keep this module isolated from the daily summary cron so the overlay can move to its own Worker later.
 const stageFallback = {
   "1": "Scheduled",
   "2": "Live",
