@@ -1,4 +1,5 @@
 import { neon } from "@neondatabase/serverless";
+import { handleLiveOverlayRequest } from "./live-overlay.js";
 
 const TARGET_RANKS = new Set([0, 1, 2, 3]);
 const TARGET_CATEGORIES = new Set(["ATP", "WTA"]);
@@ -171,6 +172,10 @@ const RUSSIAN_NAME_HINTS = [
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const liveOverlayResponse = await handleLiveOverlayRequest(request, env);
+    if (liveOverlayResponse) {
+      return liveOverlayResponse;
+    }
     if (url.pathname === "/health") {
       return json({ ok: true, service: "tennis-daily-summary-worker" });
     }
@@ -197,7 +202,15 @@ export default {
     return json({
       ok: true,
       service: "tennis-daily-summary-worker",
-      routes: ["/health", "/diag", "/run?day=YYYY-MM-DD&secret=CRON_SECRET"]
+      routes: [
+        "/health",
+        "/diag",
+        "/run?day=YYYY-MM-DD&secret=CRON_SECRET",
+        "/overlay.html",
+        "/api/match/flashscore?id=Sril3X2m",
+        "/api/news/tennis",
+        "/api/matches"
+      ]
     });
   },
 
