@@ -761,15 +761,14 @@ async function publishDailySummaries(sql, env, day, events) {
       continue;
     }
 
-    const text = buildSummaryText(env, group, tournament, stage, resultRows, oddsMap);
-    if (!text) {
+    if (!buildSummaryText(env, group, tournament, stage, resultRows, oddsMap)) {
       continue;
     }
     const summaryId = summaryReviewId();
-    await saveSummaryReview(sql, summaryId, chatId, day, group, tournament, status, stage, resultRows);
     const response = await sendTelegramMessage(token, chatId, summaryApprovalText(day, tournament, status, resultRows.length), summaryApprovalMenu(summaryId));
     const messageId = response?.result?.message_id;
     if (messageId) {
+      await saveSummaryReview(sql, summaryId, chatId, day, group, tournament, status, stage, resultRows);
       await setSummaryReviewMessage(sql, summaryId, messageId);
       sent += 1;
     }
@@ -1007,6 +1006,9 @@ function resultLine(event) {
 }
 
 function winnerSide(event) {
+  if (!hasResultWinner(event)) {
+    return "";
+  }
   const code = event.raw?.winnerCode;
   if (String(code) === "1") {
     return "home";
@@ -1022,6 +1024,14 @@ function winnerSide(event) {
     if (away > home) return "away";
   }
   return "";
+}
+
+function statusType(event) {
+  return String(event.status_type || event.raw?.status?.type || "").toLowerCase();
+}
+
+function hasResultWinner(event) {
+  return ["finished", "retired", "walkover"].includes(statusType(event));
 }
 
 function winnerSets(event, winner) {
@@ -1251,7 +1261,7 @@ function isDoubles(event) {
 }
 
 function isFinished(event) {
-  return ["finished", "retired", "cancelled", "walkover"].includes(String(event.status_type || event.raw?.status?.type || "").toLowerCase());
+  return ["finished", "retired", "cancelled", "walkover"].includes(statusType(event));
 }
 
 function commonStage(events) {
