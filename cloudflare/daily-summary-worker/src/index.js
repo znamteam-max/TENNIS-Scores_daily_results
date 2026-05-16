@@ -2,6 +2,13 @@ import { neon } from "@neondatabase/serverless";
 
 const TARGET_RANKS = new Set([0, 1, 2, 3]);
 const TARGET_CATEGORIES = new Set(["ATP"]);
+const INTERRUPTED_STATUS_TOKENS = [
+  "interrupted",
+  "abandoned",
+  "suspended",
+  "\u043f\u0440\u0435\u0440\u0432",
+  "\u043e\u0441\u0442\u0430\u043d\u043e\u0432"
+];
 
 const GRAND_SLAM_TOURNAMENTS = [
   "australian open",
@@ -1027,7 +1034,19 @@ function winnerSide(event) {
 }
 
 function statusType(event) {
-  return String(event.status_type || event.raw?.status?.type || "").toLowerCase();
+  const status = event.raw?.status || {};
+  const value = String(event.status_type || status.type || "").toLowerCase();
+  const statusText = [
+    value,
+    status.detail,
+    status.description,
+    event.raw?.statusDescription,
+    event.raw?.note
+  ].map((part) => String(part || "").toLowerCase()).join(" ");
+  if (INTERRUPTED_STATUS_TOKENS.some((token) => statusText.includes(token))) {
+    return "interrupted";
+  }
+  return value;
 }
 
 function hasResultWinner(event) {
