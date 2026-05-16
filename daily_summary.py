@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import html
 import json
 import os
@@ -14,10 +15,13 @@ from typing import Any, Dict, Iterable, List, Optional
 from db_pg import (
     get_match_odds_map,
     is_daily_summary_sent,
+    is_summary_review_pending,
     mark_daily_summary_sent,
     mark_odds_refresh,
     odds_refresh_due,
     ru_name_for,
+    save_summary_review,
+    set_summary_review_message,
     upsert_match_odds,
 )
 from match_card import FLASHSCORE_BASE, _normalize_stage
@@ -342,6 +346,8 @@ def _is_russian_side(event: Dict[str, Any], side: str) -> bool:
 
 
 def _winner_side(event: Dict[str, Any]) -> str:
+    if not ss.has_result_winner(event):
+        return ""
     code = (event.get("raw") or {}).get("winnerCode")
     if str(code) == "1":
         return "home"
@@ -606,6 +612,31 @@ def mark_daily_summary_for_tournament(day: dt.date, group: str, tournament: str,
     mark_daily_summary_sent(_summary_key(day, group, tournament, status, stage), day, group, tournament, status, stage)
 
 
+def _summary_review_id(day: dt.date, group: str, tournament: str, status: str, stage: str) -> str:
+    raw = "|".join([day.isoformat(), group or "", tournament or "", status or "", stage or "", os.urandom(4).hex()])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _summary_approval_text(day: dt.date, tournament: str, status: str, matches_count: int) -> str:
+    title = " · ".join(part for part in (status, tournament) if part)
+    return (
+        f"{matches_count} матчей завершились.\n"
+        f"{day.isoformat()} · {title or 'турнир'}\n\n"
+        "Опубликовать результаты?"
+    )
+
+
+def _summary_approval_menu(summary_id: str) -> Dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Опубликовать", "callback_data": f"auto_sum_publish|{summary_id}"},
+                {"text": "Не публиковать", "callback_data": f"auto_sum_skip|{summary_id}"},
+            ]
+        ]
+    }
+
+
 def publish_daily_summaries(day: dt.date, events: List[Dict[str, Any]], bot_token: str, chat_id: int | str) -> int:
     if not enabled() or not bot_token or not chat_id:
         return 0
@@ -621,17 +652,39 @@ def publish_daily_summaries(day: dt.date, events: List[Dict[str, Any]], bot_toke
         key = _summary_key(day, group, tournament, status, stage)
         if is_daily_summary_sent(key):
             continue
-        text = _build_summary_text(day, group, tournament, stage, rows, odds_map)
+        if is_summary_review_pending(day, group, tournament, status, stage):
+            continue
+        result_rows = [event for event in rows if _result_line(event)]
+        if not result_rows:
+            continue
+        text = _build_summary_text(day, group, tournament, stage, result_rows, odds_map)
         if not text:
             continue
-        if _send_message(bot_token, _summary_chat_id(chat_id), text):
-            mark_daily_summary_sent(key, day, group, tournament, status, stage)
+        summary_id = _summary_review_id(day, group, tournament, status, stage)
+        summary_chat_id = _summary_chat_id(chat_id)
+        try:
+            source_chat_id = int(summary_chat_id)
+        except Exception:
+            source_chat_id = int(chat_id)
+        response = _send_message(
+            bot_token,
+            summary_chat_id,
+            _summary_approval_text(day, tournament, status, len(result_rows)),
+            reply_markup=_summary_approval_menu(summary_id),
+        )
+        message_id = ((response or {}).get("result") or {}).get("message_id") if response else None
+        if message_id:
+            save_summary_review(summary_id, summary_chat_id, source_chat_id, int(message_id), day, group, tournament, status, stage, result_rows)
+            set_summary_review_message(summary_id, int(message_id))
             sent += 1
     return sent
 
 
-def _send_message(bot_token: str, chat_id: int | str, text: str) -> bool:
-    payload = json.dumps({"chat_id": chat_id, "text": text}, ensure_ascii=False).encode("utf-8")
+def _send_message(bot_token: str, chat_id: int | str, text: str, reply_markup: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    payload_obj: Dict[str, Any] = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload_obj["reply_markup"] = reply_markup
+    payload = json.dumps(payload_obj, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{bot_token}/sendMessage",
         data=payload,
@@ -639,8 +692,8 @@ def _send_message(bot_token: str, chat_id: int | str, text: str) -> bool:
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            resp.read()
-        return True
+            raw = resp.read().decode("utf-8", "replace")
+        return json.loads(raw) if raw else {"ok": True}
     except Exception as exc:
         print(f"[summary] send failed: {exc}")
-        return False
+        return None

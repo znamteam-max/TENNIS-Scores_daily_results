@@ -228,8 +228,22 @@ def _card_fix_menu(card_id: str) -> Dict[str, Any]:
             [_btn("боковая плашка", f"card_edit|{card_id}|side")],
             [_btn("фамилии", f"card_edit|{card_id}|names")],
             [_btn("счёт", f"card_edit|{card_id}|score")],
+            [_btn("победитель / верх", f"card_edit|{card_id}|winner")],
             [_btn("фото", f"card_edit|{card_id}|photo")],
             [_btn("назад", f"card_back|{card_id}")],
+        ]
+    )
+
+
+def _card_winner_menu(card_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+    home = _display_side_name(event.get("card_home_name") or event.get("home_name") or "Игрок 1")
+    away = _display_side_name(event.get("card_away_name") or event.get("away_name") or "Игрок 2")
+    return _kb(
+        [
+            [_btn(f"Сверху и жёлтым: {home}", f"card_winner|{card_id}|home")],
+            [_btn(f"Сверху и жёлтым: {away}", f"card_winner|{card_id}|away")],
+            [_btn("Без победителя и без цвета", f"card_winner|{card_id}|none")],
+            [_btn("назад", f"card_fix|{card_id}")],
         ]
     )
 
@@ -250,6 +264,8 @@ def _card_edit_prompt(field: str) -> str:
         return "Пришли новый текст боковой плашки одним сообщением.\nПример: WTA 1000 МАДРИД   1/8 ФИНАЛА"
     if field == "names":
         return "Пришли фамилии в правильном порядке: двумя строками или через /.\nПример: Соболенко / Осака"
+    if field == "winner":
+        return "Выбери, кто должен быть сверху и жёлтым. Для прерванного матча можно выбрать «Без победителя и без цвета»."
     if field == "photo":
         return "Пришли фото картинкой, файлом или прямой ссылкой на изображение. Чтобы убрать фото, напиши: убрать"
     return "Пришли счёт. Можно так: 2 6 6 6 / 1 7 3 2\nИли так: 2-1 (6-7, 6-3, 6-2)"
@@ -1033,8 +1049,13 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
 
         if data.startswith("card_edit|"):
             _, card_id, field = data.split("|", 2)
-            if not get_result_card(chat_id, card_id):
+            event = get_result_card(chat_id, card_id)
+            if not event:
                 tg_answer_callback_query(cq_id, "Плашка не найдена", show_alert=True)
+                return
+            if field == "winner":
+                tg_edit_message(chat_id, message_id, _card_edit_prompt(field), reply_markup=_card_winner_menu(card_id, event))
+                tg_answer_callback_query(cq_id)
                 return
             payload: Dict[str, Any] = {"card_id": card_id, "field": field}
             if user_id:
@@ -1042,6 +1063,28 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             set_state(chat_id, "editing_card", payload)
             tg_edit_message(chat_id, message_id, _group_edit_prompt(field) if chat_id < 0 else _card_edit_prompt(field))
             tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("card_winner|"):
+            _, card_id, side = data.split("|", 2)
+            event = get_result_card(chat_id, card_id)
+            if not event:
+                tg_answer_callback_query(cq_id, "Плашка не найдена", show_alert=True)
+                return
+            raw = event.setdefault("raw", {})
+            if side == "home":
+                event["card_winner_side"] = "home"
+                raw["winnerCode"] = 1
+            elif side == "away":
+                event["card_winner_side"] = "away"
+                raw["winnerCode"] = 2
+            else:
+                event["card_winner_side"] = "none"
+                raw.pop("winnerCode", None)
+            update_result_card(chat_id, card_id, event)
+            tg_answer_callback_query(cq_id, "Победитель обновлён")
+            tg_edit_message(chat_id, message_id, "Исправление принято, отправляю новую версию плашки.")
+            _send_result(chat_id, event)
             return
 
         if data == "menu|root":

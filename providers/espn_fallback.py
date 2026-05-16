@@ -47,6 +47,8 @@ def _status(comp: Dict[str, Any]) -> Dict[str, str]:
         kind = "retired"
     elif "walkover" in lowered or "w/o" in lowered:
         kind = "walkover"
+    elif any(token in lowered for token in ("interrupt", "abandon", "suspend", "прерван")):
+        kind = "interrupted"
     elif "cancel" in lowered:
         kind = "cancelled"
     elif completed or state == "post":

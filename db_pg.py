@@ -643,6 +643,30 @@ def set_summary_review_message(summary_id: str, message_id: int) -> None:
         )
 
 
+def is_summary_review_pending(day: dt.date, tour_group: str, tournament_name: str, tournament_status: str, stage: str) -> bool:
+    with _conn() as con, con.cursor() as cur:
+        cur.execute(
+            """
+            select 1
+            from summary_reviews
+            where day=%s
+              and tour_group=%s
+              and tournament_name=%s
+              and tournament_status=%s
+              and stage=%s
+            limit 1
+            """,
+            (
+                day,
+                tour_group or "",
+                tournament_name or "",
+                tournament_status or "",
+                stage or "",
+            ),
+        )
+        return cur.fetchone() is not None
+
+
 def get_summary_review(summary_id: str) -> Optional[Dict[str, Any]]:
     with _conn() as con, con.cursor() as cur:
         cur.execute(

@@ -220,7 +220,23 @@ def _scores(event: Dict[str, Any]) -> tuple[list[str], list[str]]:
     return h[:4], a[:4]
 
 
+def _status_type(event: Dict[str, Any]) -> str:
+    raw = event.get("raw") or {}
+    return str(event.get("status_type") or ((raw.get("status") or {}).get("type") or "")).lower()
+
+
+def _has_result_winner(event: Dict[str, Any]) -> bool:
+    return _status_type(event) in {"finished", "retired", "walkover"}
+
+
 def _winner(event: Dict[str, Any]) -> str:
+    manual = str(event.get("card_winner_side") or "").lower()
+    if manual in {"home", "away"}:
+        return manual
+    if manual == "none":
+        return ""
+    if not _has_result_winner(event):
+        return ""
     code = (event.get("raw") or {}).get("winnerCode")
     if str(code) == "1":
         return "home"

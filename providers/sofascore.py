@@ -310,6 +310,8 @@ def _status(fields: Dict[str, str]) -> str:
     phase = fields.get("AB") or ""
     detail = fields.get("AC") or ""
     note = _lower(fields.get("AM"))
+    if any(token in note for token in ("interrupted", "abandoned", "suspended", "прерван", "прерв", "останов")):
+        return "interrupted"
     if phase == "1":
         return "notstarted"
     if phase == "2":
@@ -581,6 +583,7 @@ def status_label(event: Dict[str, Any]) -> str:
         "finished": "Завершен",
         "retired": "Завершен (снятие)",
         "cancelled": "Отменен",
+        "interrupted": "Прерван",
         "walkover": "Тех. победа",
         "inprogress": "Идет",
         "notstarted": "Не начался",
@@ -589,6 +592,10 @@ def status_label(event: Dict[str, Any]) -> str:
 
 def is_finished(event: Dict[str, Any]) -> bool:
     return status_type(event) in {"finished", "retired", "cancelled", "walkover"}
+
+
+def has_result_winner(event: Dict[str, Any]) -> bool:
+    return status_type(event) in {"finished", "retired", "walkover"}
 
 
 def _score_obj(event: Dict[str, Any], side: str) -> Dict[str, Any]:
@@ -759,6 +766,8 @@ def stats_message(event: Dict[str, Any]) -> str:
 
 
 def winner_name(event: Dict[str, Any]) -> str:
+    if not has_result_winner(event):
+        return ""
     winner = (event.get("raw") or {}).get("winnerCode")
     if str(winner) == "1":
         return str(event.get("home_name") or "")
