@@ -16,6 +16,13 @@ FLASHSCORE_BASE = (os.getenv("FLASHSCORE_BASE") or "https://www.flashscorekz.com
 FLASHSCORE_LANG = os.getenv("FLASHSCORE_LANG", "ru").strip() or "ru"
 FLASHSCORE_HOME = f"{FLASHSCORE_BASE}/tennis/"
 FLASHSCORE_FSIGN = "SW9D1eZo"
+INTERRUPTED_STATUS_TOKENS = (
+    "interrupted",
+    "abandoned",
+    "suspended",
+    "\u043f\u0440\u0435\u0440\u0432",
+    "\u043e\u0441\u0442\u0430\u043d\u043e\u0432",
+)
 
 GRAND_SLAM_TOURNAMENTS = (
     "australian open",
@@ -185,6 +192,11 @@ def _lower(*parts: Any) -> str:
     return " ".join(str(p or "").strip().lower() for p in parts if p is not None).strip()
 
 
+def _is_interrupted_text(*parts: Any) -> bool:
+    text = _lower(*parts).replace("\u0451", "\u0435")
+    return any(token in text for token in INTERRUPTED_STATUS_TOKENS)
+
+
 def _ranked_status(category: str, tournament: str, season: str) -> tuple[str, int]:
     category = (category or "Other").strip()
     hay = _lower(category, tournament, season).replace("ё", "е")
@@ -309,8 +321,8 @@ def _score(fields: Dict[str, str], side: str) -> Dict[str, Any]:
 def _status(fields: Dict[str, str]) -> str:
     phase = fields.get("AB") or ""
     detail = fields.get("AC") or ""
-    note = _lower(fields.get("AM"))
-    if any(token in note for token in ("interrupted", "abandoned", "suspended", "прерван", "прерв", "останов")):
+    note = _lower(fields.get("AM"), detail)
+    if _is_interrupted_text(note):
         return "interrupted"
     if phase == "1":
         return "notstarted"
@@ -346,6 +358,7 @@ def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optiona
     tournament = _tournament_from_league(league_name)
     home_countries = [x for x in (fields.get("FU"), fields.get("FW")) if x]
     away_countries = [x for x in (fields.get("FV"), fields.get("FX")) if x]
+    status = _status(fields)
     event: Dict[str, Any] = {
         "id": _stable_id("flashscore", match_id),
         "customId": match_id,
@@ -373,7 +386,7 @@ def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optiona
             "countries": away_countries,
         },
         "startTimestamp": int(fields["AD"]) if str(fields.get("AD") or "").isdigit() else None,
-        "status": {"type": _status(fields), "detail": fields.get("AM") or ""},
+        "status": {"type": status, "detail": fields.get("AM") or fields.get("AC") or ""},
         "homeScore": _score(fields, "home"),
         "awayScore": _score(fields, "away"),
         "source": "flashscore",
@@ -382,7 +395,7 @@ def _flashscore_event(fields: Dict[str, str], league: Dict[str, str]) -> Optiona
         "tour_group_hint": _league_group(league_name),
     }
     winner = _winner_code(fields)
-    if winner:
+    if winner and status in {"finished", "retired", "walkover"}:
         event["winnerCode"] = winner
     return event
 
@@ -497,7 +510,7 @@ def normalize_event(ev: Dict[str, Any]) -> Dict[str, Any]:
         "home_name": _side_name(ev, "home"),
         "away_name": _side_name(ev, "away"),
         "start_ts": ev.get("startTimestamp") if isinstance(ev.get("startTimestamp"), int) else None,
-        "status_type": ((ev.get("status") or {}).get("type") or "").lower(),
+        "status_type": status_type({"raw": ev}),
         "raw": ev,
     }
 
@@ -574,7 +587,11 @@ def matches_for_tournament(events: List[Dict[str, Any]], category: str, tourname
 
 def status_type(event: Dict[str, Any]) -> str:
     raw = event.get("raw") or {}
-    return (event.get("status_type") or ((raw.get("status") or {}).get("type") or "")).lower()
+    status = raw.get("status") or {}
+    value = (event.get("status_type") or (status.get("type") or "")).lower()
+    if _is_interrupted_text(value, status.get("detail"), status.get("description"), raw.get("statusDescription"), raw.get("note")):
+        return "interrupted"
+    return value
 
 
 def status_label(event: Dict[str, Any]) -> str:

@@ -15,6 +15,13 @@ PANEL = (21, 20, 25, 255)
 WHITE = (246, 246, 246, 255)
 GREEN = (226, 252, 60, 255)
 LINE = (232, 232, 232, 235)
+INTERRUPTED_STATUS_TOKENS = (
+    "interrupted",
+    "abandoned",
+    "suspended",
+    "\u043f\u0440\u0435\u0440\u0432",
+    "\u043e\u0441\u0442\u0430\u043d\u043e\u0432",
+)
 
 FONT_URL = {
     "medium": "https://raw.githubusercontent.com/google/fonts/main/ofl/sofiasans/SofiaSans%5Bwght%5D.ttf",
@@ -222,7 +229,12 @@ def _scores(event: Dict[str, Any]) -> tuple[list[str], list[str]]:
 
 def _status_type(event: Dict[str, Any]) -> str:
     raw = event.get("raw") or {}
-    return str(event.get("status_type") or ((raw.get("status") or {}).get("type") or "")).lower()
+    status = raw.get("status") or {}
+    value = str(event.get("status_type") or (status.get("type") or "")).lower()
+    text = " ".join(str(part or "").lower() for part in (value, status.get("detail"), status.get("description"), raw.get("statusDescription"), raw.get("note")))
+    if any(token in text for token in INTERRUPTED_STATUS_TOKENS):
+        return "interrupted"
+    return value
 
 
 def _has_result_winner(event: Dict[str, Any]) -> bool:
