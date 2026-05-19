@@ -1571,6 +1571,7 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"ok": True, "service": "tennis-webhook"}).encode("utf-8"))
 
     def do_POST(self):
+        chat_id_for_error: Optional[int] = None
         try:
             if WEBHOOK_SECRET:
                 got = self.headers.get("x-telegram-bot-api-secret-token", "")
@@ -1580,10 +1581,16 @@ class handler(BaseHTTPRequestHandler):
                     self.wfile.write(b'{"ok":false,"error":"forbidden"}')
                     return
 
-            ensure_schema()
             length = int(self.headers.get("content-length", "0") or "0")
             raw = self.rfile.read(length) if length > 0 else b"{}"
             upd = json.loads(raw.decode("utf-8"))
+            if "message" in upd:
+                chat_id_for_error = int(((upd["message"] or {}).get("chat") or {})["id"])
+            elif "callback_query" in upd:
+                msg = ((upd["callback_query"] or {}).get("message") or {})
+                chat_id_for_error = int((msg.get("chat") or {})["id"])
+
+            ensure_schema()
 
             if "message" in upd:
                 msg = upd["message"] or {}
@@ -1612,6 +1619,14 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"ok":true}')
         except Exception as exc:
             print(f"[ERR] webhook fatal: {exc}")
+            if chat_id_for_error:
+                try:
+                    tg_send_message(
+                        chat_id_for_error,
+                        "База данных сейчас недоступна, поэтому команда не обработалась. Попробуй позже.",
+                    )
+                except Exception as send_exc:
+                    print(f"[ERR] failed to send fallback error: {send_exc}")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
