@@ -3,16 +3,47 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import socket
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import psycopg
 
 POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
+POSTGRES_FORCE_IPV4 = os.getenv("POSTGRES_FORCE_IPV4", "1").lower() not in {"0", "false", "no", "off"}
+
+
+@lru_cache(maxsize=16)
+def _ipv4_hostaddr(conninfo: str) -> Optional[str]:
+    if not POSTGRES_FORCE_IPV4:
+        return None
+    try:
+        parsed = urlparse(conninfo)
+        host = parsed.hostname
+        port = parsed.port or 5432
+    except Exception:
+        return None
+    if not host:
+        return None
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as exc:
+        print(f"[db] IPv4 resolve failed host={host}: {exc}")
+        return None
+    for info in infos:
+        hostaddr = (info[4] or [None])[0]
+        if hostaddr:
+            return str(hostaddr)
+    return None
 
 
 def _conn():
     if not POSTGRES_URL:
         raise RuntimeError("POSTGRES_URL is not set")
+    hostaddr = _ipv4_hostaddr(POSTGRES_URL)
+    if hostaddr:
+        return psycopg.connect(POSTGRES_URL, autocommit=True, hostaddr=hostaddr)
     return psycopg.connect(POSTGRES_URL, autocommit=True)
 
 

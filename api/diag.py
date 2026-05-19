@@ -148,8 +148,8 @@ def _db_check(pg_url: str) -> dict:
     if not _has_mod("psycopg"):
         return {"error": "psycopg not installed (add to requirements.txt)"}
     try:
-        import psycopg
-        with psycopg.connect(pg_url, autocommit=True) as con:
+        from db_pg import _conn
+        with _conn() as con:
             with con.cursor() as cur:
                 cur.execute("select 1")
                 row = cur.fetchone()
@@ -190,9 +190,9 @@ def _cache_check(pg_url: str) -> dict:
     if not _has_mod("psycopg"):
         return {"error": "psycopg not installed"}
     try:
-        import psycopg
+        from db_pg import _conn
         rows = []
-        with psycopg.connect(pg_url, autocommit=True) as con:
+        with _conn() as con:
             with con.cursor() as cur:
                 cur.execute(
                     """
