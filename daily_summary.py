@@ -453,6 +453,9 @@ def _category_for(event: Dict[str, Any], odds: Optional[Dict[str, Any]]) -> str:
     upset_min_odds = float(os.getenv("SUMMARY_UPSET_MIN_ODDS") or "2.70")
     if winner_odds >= upset_min_odds:
         return "unexpected"
+    surprise_min_odds = float(os.getenv("SUMMARY_SURPRISE_MIN_ODDS") or "2.15")
+    if winner_odds < surprise_min_odds:
+        return "pickem"
     return "surprise"
 
 
@@ -617,10 +620,20 @@ def _summary_review_id(day: dt.date, group: str, tournament: str, status: str, s
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def _summary_approval_text(day: dt.date, tournament: str, status: str, matches_count: int) -> str:
+def _summary_approval_text(
+    day: dt.date,
+    tournament: str,
+    status: str,
+    matches_count: int,
+    *,
+    total_matches: int,
+    unfinished_count: int,
+) -> str:
     title = " · ".join(part for part in (status, tournament) if part)
+    unfinished = f"\nЕще не завершено в источнике: {unfinished_count}." if unfinished_count else ""
     return (
-        f"{matches_count} матчей завершились.\n"
+        "Игровой день на турнире закончился или почти закончился.\n"
+        f"Готово матчей: {matches_count} из {total_matches}.{unfinished}\n"
         f"{day.isoformat()} · {title or 'турнир'}\n\n"
         "Опубликовать результаты?"
     )
@@ -644,17 +657,20 @@ def publish_daily_summaries(day: dt.date, events: List[Dict[str, Any]], bot_toke
     odds_map = get_match_odds_map([int(event["event_id"]) for event in events if event.get("event_id")])
     for group, tournament, status, rows in _target_groups(events):
         rows = [event for event in rows if _is_target_event(event, automatic=True)]
-        if not rows or not all(ss.is_finished(event) for event in rows):
+        if not rows:
             continue
-        if _requires_odds() and not any(odds_map.get(int(event["event_id"])) for event in rows):
+        finished_rows = [event for event in rows if ss.is_finished(event)]
+        if not finished_rows:
             continue
-        stage = _common_stage(rows)
+        if _requires_odds() and not any(odds_map.get(int(event["event_id"])) for event in finished_rows):
+            continue
+        stage = _common_stage(finished_rows)
         key = _summary_key(day, group, tournament, status, stage)
         if is_daily_summary_sent(key):
             continue
         if is_summary_review_pending(day, group, tournament, status, stage):
             continue
-        result_rows = [event for event in rows if _result_line(event)]
+        result_rows = [event for event in finished_rows if _result_line(event)]
         if not result_rows:
             continue
         text = _build_summary_text(day, group, tournament, stage, result_rows, odds_map)
@@ -669,7 +685,14 @@ def publish_daily_summaries(day: dt.date, events: List[Dict[str, Any]], bot_toke
         response = _send_message(
             bot_token,
             summary_chat_id,
-            _summary_approval_text(day, tournament, status, len(result_rows)),
+            _summary_approval_text(
+                day,
+                tournament,
+                status,
+                len(result_rows),
+                total_matches=len(rows),
+                unfinished_count=max(len(rows) - len(finished_rows), 0),
+            ),
             reply_markup=_summary_approval_menu(summary_id),
         )
         message_id = ((response or {}).get("result") or {}).get("message_id") if response else None
