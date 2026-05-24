@@ -198,7 +198,8 @@ def _copy_finished_state(target: Dict[str, Any], source: Dict[str, Any], reverse
 async def run_once() -> dict[str, Any]:
     ensure_schema()
 
-    days = {today_local()}
+    today = today_local()
+    days = {today, today - dt.timedelta(days=1)}
     days.update(list_pending_match_watch_days())
 
     if not BOT_TOKEN:
