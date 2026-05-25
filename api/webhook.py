@@ -303,7 +303,7 @@ def _parse_score(text: str) -> Optional[tuple[List[int], List[int]]]:
         left, right = raw.split("/", 1)
         home, away = _nums(left), _nums(right)
         if len(home) >= 2 and len(away) >= 2:
-            return home[:4], away[:4]
+            return home[:6], away[:6]
 
     pairs = [(int(a), int(b)) for a, b in re.findall(r"(\d+)\s*[-:]\s*(\d+)", raw)]
     if not pairs:
@@ -312,16 +312,16 @@ def _parse_score(text: str) -> Optional[tuple[List[int], List[int]]]:
     if len(pairs) > 1 and pairs[0][0] <= 3 and pairs[0][1] <= 3:
         total, sets = pairs[0], pairs[1:]
         if total[0] + total[1] <= len(sets):
-            return [total[0]] + [a for a, _ in sets[:3]], [total[1]] + [b for _, b in sets[:3]]
+            return [total[0]] + [a for a, _ in sets[:5]], [total[1]] + [b for _, b in sets[:5]]
 
     home_sets = sum(1 for a, b in pairs if a > b)
     away_sets = sum(1 for a, b in pairs if b > a)
-    return [home_sets] + [a for a, _ in pairs[:3]], [away_sets] + [b for _, b in pairs[:3]]
+    return [home_sets] + [a for a, _ in pairs[:5]], [away_sets] + [b for _, b in pairs[:5]]
 
 
 def _apply_score(event: Dict[str, Any], home: List[int], away: List[int]) -> None:
-    event["card_home_scores"] = home[:4]
-    event["card_away_scores"] = away[:4]
+    event["card_home_scores"] = home[:6]
+    event["card_away_scores"] = away[:6]
     raw = event.setdefault("raw", {})
     home_score = raw.setdefault("homeScore", {})
     away_score = raw.setdefault("awayScore", {})

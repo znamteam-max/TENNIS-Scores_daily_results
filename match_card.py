@@ -32,11 +32,26 @@ TEMPLATE_DIR = os.path.join(ROOT_DIR, "assets", "card_templates")
 CARD_TEMPLATES = {
     3: os.path.join(TEMPLATE_DIR, "result_2_sets.png"),
     4: os.path.join(TEMPLATE_DIR, "result_3_sets.png"),
+    5: os.path.join(TEMPLATE_DIR, "result_4_sets.png"),
+    6: os.path.join(TEMPLATE_DIR, "result_5_sets.png"),
 }
 FONT_FILES = {
     "extra_italic": os.path.join(ROOT_DIR, "fonts", "SofiaSans-ExtraBoldItalic.ttf"),
 }
 FLASHSCORE_BASE = (os.getenv("FLASHSCORE_BASE") or "https://www.flashscorekz.com").rstrip("/")
+GRAND_SLAM_TOURNAMENTS = (
+    "australian open",
+    "open australia",
+    "открытый чемпионат австралии",
+    "австралия open",
+    "roland garros",
+    "french open",
+    "ролан гаррос",
+    "wimbledon",
+    "уимблдон",
+    "us open",
+    "открытый чемпионат сша",
+)
 
 
 def _font(kind: str, size: int):
@@ -209,11 +224,46 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _norm(value: Any) -> str:
+    return " ".join(str(value or "").lower().replace("ё", "е").split())
+
+
+def _is_grand_slam(event: Dict[str, Any]) -> bool:
+    try:
+        if int(event.get("tournament_sort_rank", 9)) == 0:
+            return True
+    except Exception:
+        pass
+    hay = _norm(
+        " ".join(
+            str(part or "")
+            for part in (
+                event.get("tournament_status"),
+                event.get("tournament_name"),
+                event.get("season_name"),
+                event.get("category"),
+            )
+        )
+    )
+    return "grand slam" in hay or any(name in hay for name in GRAND_SLAM_TOURNAMENTS)
+
+
+def _is_mens_grand_slam(event: Dict[str, Any]) -> bool:
+    group = str(event.get("tour_group") or "").lower()
+    category = str(event.get("category") or "").upper()
+    return _is_grand_slam(event) and (group == "men" or category == "ATP")
+
+
+def _score_limit(event: Dict[str, Any]) -> int:
+    return 6 if _is_mens_grand_slam(event) else 4
+
+
 def _scores(event: Dict[str, Any]) -> tuple[list[str], list[str]]:
+    limit = _score_limit(event)
     custom_home = event.get("card_home_scores")
     custom_away = event.get("card_away_scores")
     if isinstance(custom_home, list) and isinstance(custom_away, list) and custom_home and custom_away:
-        return [str(x) for x in custom_home[:4]], [str(x) for x in custom_away[:4]]
+        return [str(x) for x in custom_home[:limit]], [str(x) for x in custom_away[:limit]]
 
     home, away = _score(event, "home"), _score(event, "away")
     h = [_fmt(_val(home, "current", "display"))]
@@ -224,7 +274,7 @@ def _scores(event: Dict[str, Any]) -> tuple[list[str], list[str]]:
             continue
         h.append(_fmt(hv))
         a.append(_fmt(av))
-    return h[:4], a[:4]
+    return h[:limit], a[:limit]
 
 
 def _status_type(event: Dict[str, Any]) -> str:
@@ -332,28 +382,49 @@ def _tour_line(event: Dict[str, Any]) -> str:
         tournament = tournament.split("(", 1)[0].strip()
     if "," in tournament:
         tournament = tournament.split(",", 1)[0].strip()
+    if _is_grand_slam(event):
+        title = tournament
+        stage = _stage(event)
+        return f"{title}\t  {stage}".strip() if stage else title
     title = " ".join(x for x in (category, tournament) if x).strip()
     stage = _stage(event)
     return f"{title}\t{stage}".strip() if stage else title
 
 
 def _score_columns(count: int) -> list[int]:
-    return [816, 923, 1030] if count <= 3 else [709, 824, 927, 1030]
+    if count <= 3:
+        return [816, 923, 1030]
+    if count == 4:
+        return [709, 824, 927, 1030]
+    if count == 5:
+        return [635, 742, 849, 956, 1030]
+    return [528, 635, 742, 849, 956, 1030]
 
 
 def _score_centers(count: int) -> list[int]:
-    return [795, 902, 1009] if count <= 3 else [696, 803, 910, 1007]
+    if count <= 3:
+        return [795, 902, 1009]
+    if count == 4:
+        return [696, 803, 910, 1007]
+    if count == 5:
+        return [584, 690, 797, 904, 1011]
+    return [487, 589, 691, 797, 904, 1011]
 
 
 def _score_center_x(x: int, value: str) -> int:
     return x + 5 if len(str(value)) > 1 else x
 
 
-def _score_font(draw: Any, values: list[str]):
+def _score_font(draw: Any, values: list[str], count: int):
     cleaned = [str(value) for value in values if str(value)]
     size = 64 if any(len(value) > 1 for value in cleaned) else 76
     font = _font("extra_italic", size)
-    max_width = 62 if any(len(value) > 1 for value in cleaned) else 90
+    if count >= 6:
+        max_width = 58 if any(len(value) > 1 for value in cleaned) else 74
+    elif count == 5:
+        max_width = 62 if any(len(value) > 1 for value in cleaned) else 82
+    else:
+        max_width = 62 if any(len(value) > 1 for value in cleaned) else 90
     while size > 52 and any(_size(draw, value, font)[0] > max_width for value in cleaned):
         size -= 2
         font = _font("extra_italic", size)
@@ -363,7 +434,8 @@ def _score_font(draw: Any, values: list[str]):
 def _base_template(count: int):
     from PIL import Image
 
-    path = CARD_TEMPLATES[3 if count <= 3 else 4]
+    template_key = min(6, max(3, count))
+    path = CARD_TEMPLATES[template_key]
     if not os.path.exists(path):
         raise FileNotFoundError(f"card template not found: {path}")
 
@@ -442,7 +514,7 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
     from PIL import ImageDraw
 
     home_scores, away_scores = _scores(event)
-    col_count = min(4, max(3, len(home_scores), len(away_scores)))
+    col_count = min(_score_limit(event), max(3, len(home_scores), len(away_scores)))
     home_scores = (home_scores + [""] * col_count)[:col_count]
     away_scores = (away_scores + [""] * col_count)[:col_count]
 
@@ -451,7 +523,8 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
     draw = ImageDraw.Draw(img)
     _left_bar(img, _tour_line(event))
 
-    name_x, y1, y2 = 122, 1118, 1228
+    name_x = 98 if col_count >= 6 else 122
+    y1, y2 = 1118, 1228
     score_y1, score_y2 = 1114, 1224
     cols = _score_columns(col_count)
     centers = _score_centers(col_count)
@@ -467,16 +540,15 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
         top_name, bottom_name = home_name, away_name
         top_scores, bottom_scores = home_scores, away_scores
         top_winner, bottom_winner = winner == "home", False
-    name_width = max(360, cols[0] - name_x - 55)
-    if _is_pair_name(top_name) or _is_pair_name(bottom_name):
-        top_font = bottom_font = _fit_many(draw, [top_name, bottom_name], 76, name_width)
+    if col_count >= 6:
+        name_width = max(300, cols[0] - name_x - 95)
     else:
-        top_font = _fit(draw, top_name, 76, name_width)
-        bottom_font = _fit(draw, bottom_name, 76, name_width)
+        name_width = max(360, cols[0] - name_x - 55)
+    top_font = bottom_font = _fit_many(draw, [top_name, bottom_name], 76, name_width)
     draw.text((name_x, y1), top_name, font=top_font, fill=GREEN if top_winner else WHITE)
     draw.text((name_x, y2), bottom_name, font=bottom_font, fill=GREEN if bottom_winner else WHITE)
 
-    score_font = _score_font(draw, top_scores + bottom_scores)
+    score_font = _score_font(draw, top_scores + bottom_scores, col_count)
     for idx, value in enumerate(top_scores):
         _center(draw, _score_center_x(centers[idx], value), score_y1, value, score_font, GREEN if idx == 0 and top_winner else WHITE)
     for idx, value in enumerate(bottom_scores):
