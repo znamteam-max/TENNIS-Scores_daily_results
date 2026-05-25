@@ -46,11 +46,18 @@ GRAND_SLAM_TOURNAMENTS = (
     "австралия open",
     "roland garros",
     "french open",
+    "открытый чемпионат франции",
     "ролан гаррос",
     "wimbledon",
     "уимблдон",
     "us open",
     "открытый чемпионат сша",
+)
+GRAND_SLAM_DISPLAY_TITLES = (
+    (("australian open", "open australia", "открытый чемпионат австралии", "австралия open"), "Australian Open"),
+    (("roland garros", "french open", "открытый чемпионат франции", "ролан гаррос"), "Ролан Гаррос"),
+    (("wimbledon", "уимблдон"), "Wimbledon"),
+    (("us open", "открытый чемпионат сша"), "US Open"),
 )
 
 
@@ -251,11 +258,27 @@ def _is_grand_slam(event: Dict[str, Any]) -> bool:
 def _is_mens_grand_slam(event: Dict[str, Any]) -> bool:
     group = str(event.get("tour_group") or "").lower()
     category = str(event.get("category") or "").upper()
-    return _is_grand_slam(event) and (group == "men" or category == "ATP")
+    return _is_grand_slam(event) and (group == "men" or category.startswith("ATP"))
+
+
+def _looks_best_of_five(event: Dict[str, Any]) -> bool:
+    home, away = _score(event, "home"), _score(event, "away")
+    for idx in (4, 5):
+        if _val(home, f"period{idx}") != "" and _val(away, f"period{idx}") != "":
+            return True
+    for scores in (event.get("card_home_scores"), event.get("card_away_scores")):
+        if isinstance(scores, list) and len(scores) >= 5:
+            return True
+    try:
+        home_total = int(float(_val(home, "current", "display") or 0))
+        away_total = int(float(_val(away, "current", "display") or 0))
+    except Exception:
+        return False
+    return max(home_total, away_total) >= 3 or home_total + away_total > 3
 
 
 def _score_limit(event: Dict[str, Any]) -> int:
-    return 6 if _is_mens_grand_slam(event) else 4
+    return 6 if _is_mens_grand_slam(event) or _looks_best_of_five(event) else 4
 
 
 def _scores(event: Dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -378,18 +401,37 @@ def _tour_line(event: Dict[str, Any]) -> str:
     if custom:
         return custom
     category = str(event.get("tournament_status") or event.get("category") or "").upper()
-    tournament = str(event.get("tournament_name") or "ТУРНИР").upper()
+    raw_tournament = str(event.get("tournament_name") or "ТУРНИР").strip()
+    tournament = raw_tournament.upper()
     if "(" in tournament:
         tournament = tournament.split("(", 1)[0].strip()
     if "," in tournament:
         tournament = tournament.split(",", 1)[0].strip()
     if _is_grand_slam(event):
-        title = tournament
+        title = _grand_slam_display_title(event, tournament)
         stage = _stage(event)
-        return f"{title}\t  {stage}".strip() if stage else title
+        return f"{title}\t{stage}".strip() if stage else title
     title = " ".join(x for x in (category, tournament) if x).strip()
     stage = _stage(event)
     return f"{title}\t{stage}".strip() if stage else title
+
+
+def _grand_slam_display_title(event: Dict[str, Any], fallback: str) -> str:
+    hay = _norm(
+        " ".join(
+            str(part or "")
+            for part in (
+                event.get("tournament_name"),
+                event.get("season_name"),
+                event.get("tournament_status"),
+                event.get("category"),
+            )
+        )
+    )
+    for needles, title in GRAND_SLAM_DISPLAY_TITLES:
+        if any(needle in hay for needle in needles):
+            return title
+    return fallback
 
 
 def _score_columns(count: int) -> list[int]:

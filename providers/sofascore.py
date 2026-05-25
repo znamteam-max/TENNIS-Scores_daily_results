@@ -31,6 +31,7 @@ GRAND_SLAM_TOURNAMENTS = (
     "австралия open",
     "roland garros",
     "french open",
+    "открытый чемпионат франции",
     "ролан гаррос",
     "wimbledon",
     "уимблдон",
