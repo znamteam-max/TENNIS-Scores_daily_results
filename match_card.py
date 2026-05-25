@@ -263,7 +263,8 @@ def _scores(event: Dict[str, Any]) -> tuple[list[str], list[str]]:
     custom_home = event.get("card_home_scores")
     custom_away = event.get("card_away_scores")
     if isinstance(custom_home, list) and isinstance(custom_away, list) and custom_home and custom_away:
-        return [str(x) for x in custom_home[:limit]], [str(x) for x in custom_away[:limit]]
+        if limit <= 4 or min(len(custom_home), len(custom_away)) >= limit:
+            return [str(x) for x in custom_home[:limit]], [str(x) for x in custom_away[:limit]]
 
     home, away = _score(event, "home"), _score(event, "away")
     h = [_fmt(_val(home, "current", "display"))]

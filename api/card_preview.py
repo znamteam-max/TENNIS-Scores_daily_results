@@ -22,13 +22,42 @@ SAMPLE_EVENT = {
 }
 
 
+def _grand_slam_sample(sets: str) -> dict:
+    raw = {
+        "winnerCode": 1,
+        "flashscore_round": "1/64 финала",
+        "status": {"type": "finished"},
+        "homeScore": {"current": 3},
+        "awayScore": {"current": 2},
+    }
+    home_sets = [6, 7, 6, 6, 7] if sets == "5" else [5, 7, 6, 6]
+    away_sets = [4, 6, 7, 7, 5] if sets == "5" else [7, 5, 1, 4]
+    raw["homeScore"].update({f"period{idx}": value for idx, value in enumerate(home_sets, start=1)})
+    raw["awayScore"].update({f"period{idx}": value for idx, value in enumerate(away_sets, start=1)})
+    return {
+        "category": "ATP",
+        "tournament_status": "Grand Slam",
+        "tournament_sort_rank": 0,
+        "tour_group": "men",
+        "tournament_name": "Ролан Гаррос",
+        "season_name": "Roland Garros",
+        "home_name": "Алькарас",
+        "away_name": "Зверев",
+        "raw": raw,
+    }
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
-            event = dict(SAMPLE_EVENT)
-            event["raw"] = dict(SAMPLE_EVENT["raw"])
             query = parse_qs(urlparse(self.path).query)
-            if query.get("sets", ["3"])[0] == "2":
+            sets = query.get("sets", ["3"])[0]
+            if query.get("gs", ["0"])[0] in {"1", "true", "yes"}:
+                event = _grand_slam_sample(sets)
+            else:
+                event = dict(SAMPLE_EVENT)
+                event["raw"] = dict(SAMPLE_EVENT["raw"])
+            if sets == "2":
                 event["raw"]["homeScore"] = {"current": 2, "period1": 6, "period2": 6}
                 event["raw"]["awayScore"] = {"current": 0, "period1": 4, "period2": 3}
             body = build_match_card_png(event)
