@@ -47,12 +47,28 @@ def _grand_slam_sample(sets: str) -> dict:
     }
 
 
+def _french_open_flashscore_sample(sets: str) -> dict:
+    event = _grand_slam_sample(sets)
+    event.pop("tournament_sort_rank", None)
+    event["tournament_status"] = "ATP 250"
+    event["tournament_name"] = "Открытый чемпионат Франции (Франция)"
+    event["season_name"] = "ATP - Одиночный разряд"
+    event["home_name"] = "Рууд К."
+    event["away_name"] = "Сафиуллин Р."
+    if sets == "5":
+        event["raw"]["homeScore"].update({"current": 3, "period1": 6, "period2": 7, "period3": 5, "period4": 0, "period5": 6})
+        event["raw"]["awayScore"].update({"current": 2, "period1": 2, "period2": 6, "period3": 7, "period4": 6, "period5": 2})
+    return event
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             query = parse_qs(urlparse(self.path).query)
             sets = query.get("sets", ["3"])[0]
-            if query.get("gs", ["0"])[0] in {"1", "true", "yes"}:
+            if query.get("french", ["0"])[0] in {"1", "true", "yes"}:
+                event = _french_open_flashscore_sample(sets)
+            elif query.get("gs", ["0"])[0] in {"1", "true", "yes"}:
                 event = _grand_slam_sample(sets)
             else:
                 event = dict(SAMPLE_EVENT)
