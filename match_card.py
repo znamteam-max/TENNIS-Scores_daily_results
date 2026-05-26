@@ -15,6 +15,12 @@ PANEL = (21, 20, 25, 255)
 WHITE = (246, 246, 246, 255)
 GREEN = (226, 252, 60, 255)
 LINE = (232, 232, 232, 235)
+PANEL_FONT_MAX = 76
+PANEL_FONT_MIN = 30
+NAME_SCORE_GAP = 44
+BO5_NAME_SCORE_GAP = 34
+ROW1_CENTER_Y = 1161
+ROW2_CENTER_Y = 1271
 INTERRUPTED_STATUS_TOKENS = (
     "interrupted",
     "abandoned",
@@ -121,6 +127,28 @@ def _center(draw: Any, x: int, y: int, text: str, font: Any, fill: tuple[int, in
     box = draw.textbbox((0, 0), str(text), font=font)
     tw = box[2] - box[0]
     draw.text((int(round(x - tw / 2 - box[0])), y), str(text), font=font, fill=fill)
+
+
+def _row_y(draw: Any, text: str, font: Any, center_y: int) -> int:
+    box = draw.textbbox((0, 0), str(text), font=font)
+    return int(round(center_y - (box[1] + box[3]) / 2))
+
+
+def _left_row(draw: Any, x: int, center_y: int, text: str, font: Any, fill: tuple[int, int, int, int]) -> None:
+    draw.text((x, _row_y(draw, text, font, center_y)), str(text), font=font, fill=fill)
+
+
+def _center_row(draw: Any, x: int, center_y: int, text: str, font: Any, fill: tuple[int, int, int, int]) -> None:
+    box = draw.textbbox((0, 0), str(text), font=font)
+    draw.text(
+        (
+            int(round(x - (box[0] + box[2]) / 2)),
+            int(round(center_y - (box[1] + box[3]) / 2)),
+        ),
+        str(text),
+        font=font,
+        fill=fill,
+    )
 
 
 def _has_cyrillic(text: str) -> bool:
@@ -441,7 +469,7 @@ def _score_columns(count: int) -> list[int]:
         return [709, 824, 927, 1030]
     if count == 5:
         return [635, 742, 849, 956, 1030]
-    return [528, 635, 742, 849, 956, 1030]
+    return [580, 672, 762, 854, 944, 1030]
 
 
 def _score_centers(count: int) -> list[int]:
@@ -451,7 +479,7 @@ def _score_centers(count: int) -> list[int]:
         return [696, 803, 910, 1007]
     if count == 5:
         return [584, 690, 797, 904, 1011]
-    return [487, 589, 691, 797, 904, 1011]
+    return [535, 626, 717, 808, 899, 990]
 
 
 def _score_center_x(x: int, value: str) -> int:
@@ -472,6 +500,42 @@ def _score_font(draw: Any, values: list[str], count: int):
         size -= 2
         font = _font("extra_italic", size)
     return font
+
+
+def _score_value_width_limit(values: list[str], count: int) -> int:
+    cleaned = [str(value) for value in values if str(value)]
+    has_wide_value = any(len(value) > 1 for value in cleaned)
+    if count >= 6:
+        return 58 if has_wide_value else 74
+    if count == 5:
+        return 62 if has_wide_value else 82
+    return 62 if has_wide_value else 90
+
+
+def _panel_font(
+    draw: Any,
+    names: list[str],
+    score_rows: list[list[str]],
+    count: int,
+    centers: list[int],
+    name_x: int,
+):
+    score_values = [str(value) for row in score_rows for value in row if str(value)]
+    first_score_values = [str(row[0]) for row in score_rows if row and str(row[0])]
+    score_limit = _score_value_width_limit(score_values, count)
+
+    for size in range(PANEL_FONT_MAX, PANEL_FONT_MIN - 1, -2):
+        font = _font("extra_italic", size)
+        if any(_size(draw, value, font)[0] > score_limit for value in score_values):
+            continue
+
+        first_score_width = max((_size(draw, value, font)[0] for value in first_score_values), default=0)
+        gap = BO5_NAME_SCORE_GAP if count >= 6 else NAME_SCORE_GAP
+        name_width = centers[0] - first_score_width / 2 - gap - name_x
+        if all(_size(draw, name, font)[0] <= name_width for name in names if name):
+            return font
+
+    return _font("extra_italic", PANEL_FONT_MIN)
 
 
 def _base_template(count: int):
@@ -567,9 +631,6 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
     _left_bar(img, _tour_line(event))
 
     name_x = 98 if col_count >= 6 else 122
-    y1, y2 = 1118, 1228
-    score_y1, score_y2 = 1114, 1224
-    cols = _score_columns(col_count)
     centers = _score_centers(col_count)
 
     home_name = _surname(str(event.get("card_home_name") or event.get("home_name") or "TBD"))
@@ -583,19 +644,15 @@ def build_match_card_png(event: Dict[str, Any]) -> bytes:
         top_name, bottom_name = home_name, away_name
         top_scores, bottom_scores = home_scores, away_scores
         top_winner, bottom_winner = winner == "home", False
-    if col_count >= 6:
-        name_width = max(300, cols[0] - name_x - 95)
-    else:
-        name_width = max(360, cols[0] - name_x - 55)
-    top_font = bottom_font = _fit_many(draw, [top_name, bottom_name], 76, name_width)
-    draw.text((name_x, y1), top_name, font=top_font, fill=GREEN if top_winner else WHITE)
-    draw.text((name_x, y2), bottom_name, font=bottom_font, fill=GREEN if bottom_winner else WHITE)
 
-    score_font = _score_font(draw, top_scores + bottom_scores, col_count)
+    panel_font = _panel_font(draw, [top_name, bottom_name], [top_scores, bottom_scores], col_count, centers, name_x)
+    _left_row(draw, name_x, ROW1_CENTER_Y, top_name, panel_font, GREEN if top_winner else WHITE)
+    _left_row(draw, name_x, ROW2_CENTER_Y, bottom_name, panel_font, GREEN if bottom_winner else WHITE)
+
     for idx, value in enumerate(top_scores):
-        _center(draw, _score_center_x(centers[idx], value), score_y1, value, score_font, GREEN if idx == 0 and top_winner else WHITE)
+        _center_row(draw, _score_center_x(centers[idx], value), ROW1_CENTER_Y, value, panel_font, GREEN if idx == 0 and top_winner else WHITE)
     for idx, value in enumerate(bottom_scores):
-        _center(draw, _score_center_x(centers[idx], value), score_y2, value, score_font, GREEN if idx == 0 and bottom_winner else WHITE)
+        _center_row(draw, _score_center_x(centers[idx], value), ROW2_CENTER_Y, value, panel_font, GREEN if idx == 0 and bottom_winner else WHITE)
 
     out = BytesIO()
     img.save(out, format="PNG")

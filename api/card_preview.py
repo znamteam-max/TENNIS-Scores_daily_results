@@ -61,6 +61,23 @@ def _french_open_flashscore_sample(sets: str) -> dict:
     return event
 
 
+def _apply_preview_case(event: dict, case: str) -> dict:
+    raw = event.setdefault("raw", {})
+    if case in {"davidovich", "long"}:
+        event["home_name"] = "Давидович Фокина А."
+        event["away_name"] = "Джумхур Д."
+        raw["winnerCode"] = 1
+        raw["homeScore"] = {"current": 3, "period1": 6, "period2": 6, "period3": 2, "period4": 7, "period5": 6}
+        raw["awayScore"] = {"current": 2, "period1": 7, "period2": 3, "period3": 6, "period4": 5, "period5": 3}
+    elif case == "medjedovic":
+        event["home_name"] = "Меджедович Х."
+        event["away_name"] = "Ханфманн Я."
+        raw["winnerCode"] = 1
+        raw["homeScore"] = {"current": 3, "period1": 6, "period2": 6, "period3": 6, "period4": 6}
+        raw["awayScore"] = {"current": 1, "period1": 3, "period2": 4, "period3": 7, "period4": 4}
+    return event
+
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
@@ -76,6 +93,7 @@ class handler(BaseHTTPRequestHandler):
             if sets == "2":
                 event["raw"]["homeScore"] = {"current": 2, "period1": 6, "period2": 6}
                 event["raw"]["awayScore"] = {"current": 0, "period1": 4, "period2": 3}
+            event = _apply_preview_case(event, query.get("case", [""])[0])
             body = build_match_card_png(event)
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
