@@ -82,6 +82,13 @@ def _summary_chat_id(default_chat_id: int | str) -> int | str:
     return (os.getenv("SUMMARY_CHAT_ID") or default_chat_id)
 
 
+def _int_or_none(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
 def _norm(text: Any) -> str:
     value = unicodedata.normalize("NFKD", str(text or ""))
     value = "".join(ch for ch in value if not unicodedata.combining(ch)).lower().replace("ё", "е")
@@ -678,10 +685,7 @@ def publish_daily_summaries(day: dt.date, events: List[Dict[str, Any]], bot_toke
             continue
         summary_id = _summary_review_id(day, group, tournament, status, stage)
         summary_chat_id = _summary_chat_id(chat_id)
-        try:
-            source_chat_id = int(summary_chat_id)
-        except Exception:
-            source_chat_id = int(chat_id)
+        source_chat_id = _int_or_none(summary_chat_id) or _int_or_none(chat_id)
         response = _send_message(
             bot_token,
             summary_chat_id,

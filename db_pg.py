@@ -619,7 +619,7 @@ def mark_daily_summary_sent(summary_key: str, day: dt.date, tour_group: str, tou
 def save_summary_review(
     summary_id: str,
     chat_id: int | str,
-    source_chat_id: int,
+    source_chat_id: Optional[int],
     message_id: Optional[int],
     day: dt.date,
     tour_group: str,
@@ -653,7 +653,7 @@ def save_summary_review(
             (
                 summary_id,
                 str(chat_id),
-                int(source_chat_id),
+                int(source_chat_id) if source_chat_id is not None else None,
                 int(message_id) if message_id else None,
                 day,
                 tour_group or "",
