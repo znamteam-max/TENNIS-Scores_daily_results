@@ -8,7 +8,7 @@ import re
 import unicodedata
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from daily_summary import cache_match_odds, publish_daily_summaries
@@ -195,12 +195,22 @@ def _copy_finished_state(target: Dict[str, Any], source: Dict[str, Any], reverse
     return target
 
 
-async def run_once() -> dict[str, Any]:
+def _include_yesterday_by_default() -> bool:
+    return os.getenv("POLL_INCLUDE_YESTERDAY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def run_once(days: Optional[Iterable[dt.date]] = None, *, include_yesterday: Optional[bool] = None) -> dict[str, Any]:
     ensure_schema()
 
     today = today_local()
-    days = {today, today - dt.timedelta(days=1)}
-    days.update(list_pending_match_watch_days())
+    if days is None:
+        run_days = {today}
+        include_previous = include_yesterday if include_yesterday is not None else _include_yesterday_by_default()
+        if include_previous:
+            run_days.add(today - dt.timedelta(days=1))
+    else:
+        run_days = set(days)
+    run_days.update(list_pending_match_watch_days())
 
     if not BOT_TOKEN:
         print("[WARN] TELEGRAM_BOT_TOKEN is not set; result notifications skipped")
@@ -209,7 +219,7 @@ async def run_once() -> dict[str, Any]:
 
     sent = 0
     sources: list[dict[str, Any]] = []
-    for day in sorted(days):
+    for day in sorted(run_days, reverse=True):
         data, sofascore_data, espn_data = await _fetch_sources(day)
         events = ss.normalize_events(data)
         fallback_events = ss.normalize_events(sofascore_data) + ss.normalize_events(espn_data)

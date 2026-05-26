@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import datetime as dt
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -10,6 +11,13 @@ from gha_worker import run_once
 
 
 CRON_SECRET = os.getenv("CRON_SECRET", "").strip()
+
+
+def _parse_day(value):
+    try:
+        return dt.date.fromisoformat(str(value))
+    except Exception:
+        return None
 
 
 class handler(BaseHTTPRequestHandler):
@@ -33,7 +41,14 @@ class handler(BaseHTTPRequestHandler):
             return
 
         try:
-            result = asyncio.run(run_once()) or {}
+            query = parse_qs(urlparse(self.path).query)
+            days = []
+            for raw in query.get("day", []) + ",".join(query.get("days", [])).split(","):
+                day = _parse_day(raw.strip())
+                if day:
+                    days.append(day)
+            include_yesterday = (query.get("include_yesterday") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
+            result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday)) or {}
             payload = {"ok": True, **result}
         except Exception as exc:
             print(f"[ERR] cron poll failed: {exc}")
