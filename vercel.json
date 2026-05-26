@@ -7,6 +7,9 @@
     "api/poll.py": {
       "maxDuration": 60
     },
+    "api/fantasy_matches.py": {
+      "maxDuration": 60
+    },
     "api/card_preview.py": {
       "maxDuration": 60
     }
