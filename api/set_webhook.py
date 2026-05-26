@@ -10,6 +10,11 @@ from urllib.parse import parse_qs, urlparse
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CRON_SECRET = os.getenv("CRON_SECRET", "").strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
+ALLOWED_HOSTS = {
+    "tennis-scores-daily-results.vercel.app",
+    "tennis-scores-daily-results-1.vercel.app",
+}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -41,16 +46,22 @@ class handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "host header is missing"}, 400)
             return
 
-        target = f"https://{host}/api/webhook"
         query = parse_qs(urlparse(self.path).query)
+        target_host = (query.get("host") or [host])[0].strip().lower()
+        if target_host not in ALLOWED_HOSTS:
+            self._send_json({"ok": False, "error": "target host is not allowed"}, 400)
+            return
+
+        target = f"https://{target_host}/api/webhook"
         drop_pending = (query.get("drop_pending_updates") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
-        body = urllib.parse.urlencode(
-            {
-                "url": target,
-                "allowed_updates": json.dumps(["message", "callback_query"]),
-                "drop_pending_updates": "true" if drop_pending else "false",
-            }
-        ).encode("utf-8")
+        payload = {
+            "url": target,
+            "allowed_updates": json.dumps(["message", "callback_query"]),
+            "drop_pending_updates": "true" if drop_pending else "false",
+        }
+        if WEBHOOK_SECRET:
+            payload["secret_token"] = WEBHOOK_SECRET
+        body = urllib.parse.urlencode(payload).encode("utf-8")
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
             data=body,
