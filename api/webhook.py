@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import traceback
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
@@ -60,6 +61,30 @@ BOT_COMMANDS = [
     {"command": "tz", "description": "сменить часовой пояс, например Europe/Helsinki"},
 ]
 _ALIAS_CACHE: Dict[str, str] = {}
+
+
+def _error_code(prefix: str) -> str:
+    raw = f"{prefix}|{dt.datetime.utcnow().isoformat()}|{os.urandom(4).hex()}"
+    return f"{prefix}-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:8].upper()}"
+
+
+def _error_text(code: str, action: str, exc: Exception) -> str:
+    detail = f"{type(exc).__name__}: {exc}"
+    if len(detail) > 700:
+        detail = detail[:697] + "..."
+    return (
+        "Ошибка обработки команды.\n"
+        f"Код: {code}\n"
+        f"Действие: {action[:120] or 'unknown'}\n"
+        f"Причина: {detail}"
+    )
+
+
+def _send_user_error(chat_id: int, code: str, action: str, exc: Exception) -> None:
+    try:
+        tg_send_message(chat_id, _error_text(code, action, exc))
+    except Exception as send_exc:
+        print(f"[ERR] failed to send user error code={code}: {send_exc}")
 
 
 def _tg_api(method: str) -> str:
@@ -124,13 +149,13 @@ def tg_send_chat_action(chat_id: int | str, action: str = "typing") -> None:
         _post_json(_tg_api("sendChatAction"), {"chat_id": chat_id, "action": action})
 
 
-def tg_edit_message(chat_id: int | str, message_id: int, text: str, reply_markup: Optional[dict] = None) -> None:
+def tg_edit_message(chat_id: int | str, message_id: int, text: str, reply_markup: Optional[dict] = None) -> bool:
     if not BOT_TOKEN:
-        return
+        return False
     payload: Dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    _post_json(_tg_api("editMessageText"), payload)
+    return _post_json(_tg_api("editMessageText"), payload)
 
 
 def tg_answer_callback_query(cb_id: str, text: Optional[str] = None, show_alert: bool = False) -> None:
@@ -552,7 +577,7 @@ def _tournaments_menu(chat_id: int, group: str, day: Optional[dt.date] = None) -
             bits.append(f"заверш. {item['finished_count']}")
         status = str(item.get("tournament_status") or item.get("category") or "").strip()
         title = f"{status} · {item['tournament_name']}" if status else str(item["tournament_name"])
-        rows.append([_btn(_cut(f"{title} ({', '.join(bits)})"), f"tour|{group}|{idx}")])
+        rows.append([_btn(_cut(f"{title} ({', '.join(bits)})"), f"tour|{group}|{day.isoformat()}|{idx}")])
     rows.append(_date_nav_buttons(chat_id, group, day))
     rows.append([_btn("Назад", "menu|root")])
     return _kb(rows)
@@ -870,7 +895,7 @@ def _matches_menu(chat_id: int, group: str, tournament: str, day: Optional[dt.da
     day = day or _active_day(chat_id)
     selected = _selected_ids(chat_id, day)
     rows: List[List[Dict[str, str]]] = []
-    for match in _matches_for_state(chat_id, group, tournament, day)[:100]:
+    for match in _matches_for_state(chat_id, group, tournament, day)[:95]:
         rows.append(
             [
                 _btn(_match_label(chat_id, match, int(match["event_id"]) in selected), f"watch_toggle|{match['event_id']}"),
@@ -1433,22 +1458,37 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             return
 
         if data.startswith("tour|"):
-            _, group, idx_s = data.split("|", 2)
+            parts = data.split("|")
+            if len(parts) == 4:
+                _, group, day_s, idx_s = parts
+                day = _parse_day(chat_id, day_s)
+            else:
+                _, group, idx_s = parts
+                day = _active_day(chat_id)
             idx = int(idx_s) - 1
-            day = _active_day(chat_id)
+            tg_answer_callback_query(cq_id, "Открываю турнир...")
             tours = _tournaments_map(chat_id, group, day)
             if idx < 0 or idx >= len(tours):
-                tg_answer_callback_query(cq_id, "Турнир не найден", show_alert=True)
+                tg_send_message(chat_id, "Турнир не найден. Вернись к списку турниров и выбери его заново.")
                 return
             tournament = tours[idx]["tournament_name"]
             set_state(chat_id, "picked_tournament", {"group": group, "tournament_name": tournament, "day": day.isoformat()})
-            tg_edit_message(
+            matches_markup = _matches_menu(chat_id, group, tournament, day)
+            ok = tg_edit_message(
                 chat_id,
                 message_id,
                 _matches_title(chat_id, group, tournament, day),
-                reply_markup=_matches_menu(chat_id, group, tournament, day),
+                reply_markup=matches_markup,
             )
-            tg_answer_callback_query(cq_id)
+            if not ok:
+                code = _error_code("EDIT")
+                tg_send_message(
+                    chat_id,
+                    "Не смог открыть список матчей в старом сообщении.\n"
+                    f"Код: {code}\n"
+                    "Отправляю список матчей новым сообщением.",
+                    reply_markup=matches_markup,
+                )
             return
 
         if data.startswith("watch_toggle|"):
@@ -1558,8 +1598,10 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
 
         tg_answer_callback_query(cq_id)
     except Exception as exc:
-        print(f"[ERR] callback failed: {exc}")
-        tg_answer_callback_query(cq_id, "Ошибка обработки", show_alert=True)
+        code = _error_code("CB")
+        print(f"[ERR] callback failed code={code} data={data}: {exc}\n{traceback.format_exc()}")
+        _send_user_error(chat_id, code, data, exc)
+        tg_answer_callback_query(cq_id, f"Ошибка {code}", show_alert=True)
 
 
 class handler(BaseHTTPRequestHandler):
@@ -1618,12 +1660,13 @@ class handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
         except Exception as exc:
-            print(f"[ERR] webhook fatal: {exc}")
+            code = _error_code("WH")
+            print(f"[ERR] webhook fatal code={code}: {exc}\n{traceback.format_exc()}")
             if chat_id_for_error:
                 try:
                     tg_send_message(
                         chat_id_for_error,
-                        "База данных сейчас недоступна, поэтому команда не обработалась. Попробуй позже.",
+                        _error_text(code, "webhook", exc),
                     )
                 except Exception as send_exc:
                     print(f"[ERR] failed to send fallback error: {send_exc}")
