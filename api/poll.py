@@ -7,7 +7,7 @@ import datetime as dt
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
-from gha_worker import run_once
+from gha_worker import run_once, sync_fantasy_results
 
 
 CRON_SECRET = os.getenv("CRON_SECRET", "").strip()
@@ -55,7 +55,19 @@ class handler(BaseHTTPRequestHandler):
                 "actions": (query.get("fantasy_actions") or [""])[0],
             }
             fantasy_config = {k: v for k, v in fantasy_config.items() if v}
-            result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday, fantasy_config=fantasy_config)) or {}
+            has_fantasy_key = bool(fantasy_config.get("key") or os.getenv("FANTASY_ADMIN_ACTION_KEY", "").strip())
+            explicit_fantasy_actions = bool(fantasy_config.get("actions"))
+            if has_fantasy_key and not explicit_fantasy_actions and dt.datetime.utcnow().minute % 2 == 1:
+                fantasy_config["actions"] = "refresh_matches"
+                result = {
+                    "sent": 0,
+                    "sources": [{"skipped": "source_fetch", "reason": "fantasy_refresh_phase"}],
+                    "fantasy": sync_fantasy_results(fantasy_config),
+                }
+            else:
+                if has_fantasy_key and not explicit_fantasy_actions:
+                    fantasy_config["actions"] = "send_notification_queue"
+                result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday, fantasy_config=fantasy_config)) or {}
             payload = {"ok": True, **result}
         except Exception as exc:
             print(f"[ERR] cron poll failed: {exc}")
