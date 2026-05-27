@@ -57,7 +57,15 @@ class handler(BaseHTTPRequestHandler):
             fantasy_config = {k: v for k, v in fantasy_config.items() if v}
             has_fantasy_key = bool(fantasy_config.get("key") or os.getenv("FANTASY_ADMIN_ACTION_KEY", "").strip())
             explicit_fantasy_actions = bool(fantasy_config.get("actions"))
-            if has_fantasy_key and not explicit_fantasy_actions and dt.datetime.utcnow().minute % 2 == 1:
+            if has_fantasy_key and not explicit_fantasy_actions and dt.datetime.utcnow().minute % 3 == 0:
+                result = asyncio.run(
+                    run_once(
+                        days or None,
+                        include_yesterday=include_yesterday,
+                        fantasy_config={"actions": "off"},
+                    )
+                ) or {}
+            elif has_fantasy_key and not explicit_fantasy_actions and dt.datetime.utcnow().minute % 3 == 1:
                 fantasy_config["actions"] = "refresh_matches"
                 result = {
                     "sent": 0,
@@ -67,7 +75,13 @@ class handler(BaseHTTPRequestHandler):
             else:
                 if has_fantasy_key and not explicit_fantasy_actions:
                     fantasy_config["actions"] = "send_notification_queue"
-                result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday, fantasy_config=fantasy_config)) or {}
+                    result = {
+                        "sent": 0,
+                        "sources": [{"skipped": "source_fetch", "reason": "fantasy_queue_phase"}],
+                        "fantasy": sync_fantasy_results(fantasy_config),
+                    }
+                else:
+                    result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday, fantasy_config=fantasy_config)) or {}
             payload = {"ok": True, **result}
         except Exception as exc:
             print(f"[ERR] cron poll failed: {exc}")

@@ -73,8 +73,12 @@ def _tg_send_message(chat_id: int, text: str) -> bool:
 def _fantasy_sync_config(overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     overrides = overrides or {}
     actions_raw = overrides.get("actions") or os.getenv("FANTASY_SYNC_ACTIONS", DEFAULT_FANTASY_SYNC_ACTIONS)
-    actions = [item.strip() for item in str(actions_raw or "").split(",") if item.strip()]
-    if not actions or "auto" in actions:
+    actions_disabled = str(actions_raw or "").strip().lower() in {"0", "off", "none", "skip", "false"}
+    if actions_disabled:
+        actions = []
+    else:
+        actions = [item.strip() for item in str(actions_raw or "").split(",") if item.strip()]
+    if not actions_disabled and (not actions or "auto" in actions):
         actions = ["refresh_matches"] if dt.datetime.now(_tz()).minute % 2 == 0 else ["send_notification_queue"]
     return {
         "url": str(overrides.get("url") or os.getenv("FANTASY_SYNC_URL", DEFAULT_FANTASY_SYNC_URL)).strip(),
