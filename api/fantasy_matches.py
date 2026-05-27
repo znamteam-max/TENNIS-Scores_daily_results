@@ -171,9 +171,6 @@ def _pair_key(left: str, right: str) -> tuple[str, str]:
 STALE_PAIR_KEYS = {
     _pair_key("Дакворт Дж.", "Jodar R."),
     _pair_key("James Duckworth", "Jodar R."),
-    _pair_key("Джонс Ф.", "Боузкова М."),
-    _pair_key("Jones F.", "Bouzkova M."),
-    _pair_key("Francesca Jones", "Bouzkova M."),
     _pair_key("Leroux J.", "Reco A."),
 }
 
