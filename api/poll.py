@@ -48,7 +48,14 @@ class handler(BaseHTTPRequestHandler):
                 if day:
                     days.append(day)
             include_yesterday = (query.get("include_yesterday") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
-            result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday)) or {}
+            fantasy_config = {
+                "url": (query.get("fantasy_url") or [""])[0],
+                "key": (query.get("fantasy_key") or [""])[0],
+                "admin_id": (query.get("fantasy_admin_id") or [""])[0],
+                "actions": (query.get("fantasy_actions") or [""])[0],
+            }
+            fantasy_config = {k: v for k, v in fantasy_config.items() if v}
+            result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday, fantasy_config=fantasy_config)) or {}
             payload = {"ok": True, **result}
         except Exception as exc:
             print(f"[ERR] cron poll failed: {exc}")

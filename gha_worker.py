@@ -34,14 +34,7 @@ PUBLISH_CHAT_ID = (
     or os.getenv("TELEGRAM_PUBLISH_CHAT_ID")
     or ""
 ).strip()
-FANTASY_SYNC_URL = os.getenv("FANTASY_SYNC_URL", "").strip()
-FANTASY_ADMIN_ACTION_KEY = os.getenv("FANTASY_ADMIN_ACTION_KEY", "").strip()
-FANTASY_ADMIN_ID = os.getenv("FANTASY_ADMIN_ID", "").strip()
-FANTASY_SYNC_ACTIONS = [
-    item.strip()
-    for item in (os.getenv("FANTASY_SYNC_ACTIONS", "refresh_matches,send_notification_queue") or "").split(",")
-    if item.strip()
-]
+DEFAULT_FANTASY_SYNC_ACTIONS = "refresh_matches,send_notification_queue"
 
 
 def _publish_chat_id(chat_id: int) -> int | str:
@@ -72,19 +65,33 @@ def _tg_send_message(chat_id: int, text: str) -> bool:
         return False
 
 
-def _fantasy_sync_action(action: str) -> Dict[str, Any]:
-    if not (FANTASY_SYNC_URL and FANTASY_ADMIN_ACTION_KEY and FANTASY_ADMIN_ID):
+def _fantasy_sync_config(overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    overrides = overrides or {}
+    actions_raw = overrides.get("actions") or os.getenv("FANTASY_SYNC_ACTIONS", DEFAULT_FANTASY_SYNC_ACTIONS)
+    return {
+        "url": str(overrides.get("url") or os.getenv("FANTASY_SYNC_URL", "")).strip(),
+        "key": str(overrides.get("key") or os.getenv("FANTASY_ADMIN_ACTION_KEY", "")).strip(),
+        "admin_id": str(overrides.get("admin_id") or os.getenv("FANTASY_ADMIN_ID", "")).strip(),
+        "actions": [item.strip() for item in str(actions_raw or "").split(",") if item.strip()],
+    }
+
+
+def _fantasy_sync_action(action: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    sync_url = config.get("url") or ""
+    action_key = config.get("key") or ""
+    admin_id = config.get("admin_id") or ""
+    if not (sync_url and action_key and admin_id):
         return {"action": action, "ok": False, "skipped": "not_configured"}
 
     query = urllib.parse.urlencode(
         {
             "adminAction": action,
-            "key": FANTASY_ADMIN_ACTION_KEY,
-            "adminId": FANTASY_ADMIN_ID,
+            "key": action_key,
+            "adminId": admin_id,
         }
     )
-    separator = "&" if "?" in FANTASY_SYNC_URL else "?"
-    url = f"{FANTASY_SYNC_URL}{separator}{query}"
+    separator = "&" if "?" in sync_url else "?"
+    url = f"{sync_url}{separator}{query}"
     try:
         with urllib.request.urlopen(url, timeout=110) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
@@ -96,10 +103,11 @@ def _fantasy_sync_action(action: str) -> Dict[str, Any]:
         return {"action": action, "ok": False, "error": str(exc)}
 
 
-def sync_fantasy_results() -> list[Dict[str, Any]]:
-    if not FANTASY_SYNC_ACTIONS:
+def sync_fantasy_results(config_overrides: Optional[Dict[str, Any]] = None) -> list[Dict[str, Any]]:
+    config = _fantasy_sync_config(config_overrides)
+    if not config["actions"]:
         return []
-    return [_fantasy_sync_action(action) for action in FANTASY_SYNC_ACTIONS]
+    return [_fantasy_sync_action(action, config) for action in config["actions"]]
 
 
 async def _fetch_and_cache(day: dt.date) -> dict:
@@ -238,7 +246,12 @@ def _include_yesterday_by_default() -> bool:
     return os.getenv("POLL_INCLUDE_YESTERDAY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-async def run_once(days: Optional[Iterable[dt.date]] = None, *, include_yesterday: Optional[bool] = None) -> dict[str, Any]:
+async def run_once(
+    days: Optional[Iterable[dt.date]] = None,
+    *,
+    include_yesterday: Optional[bool] = None,
+    fantasy_config: Optional[Dict[str, Any]] = None,
+) -> dict[str, Any]:
     ensure_schema()
 
     today = today_local()
@@ -326,7 +339,7 @@ async def run_once(days: Optional[Iterable[dt.date]] = None, *, include_yesterda
         if summary_sent:
             print(f"[OK] daily summaries sent={summary_sent} day={day}")
 
-    fantasy_sync = sync_fantasy_results()
+    fantasy_sync = sync_fantasy_results(fantasy_config)
     print(f"[OK] result notifications sent={sent}")
     return {"sent": sent, "sources": sources, "fantasy": fantasy_sync}
 
