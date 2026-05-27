@@ -8,6 +8,7 @@ import re
 import unicodedata
 import urllib.error
 import urllib.request
+import urllib.parse
 from typing import Any, Dict, Iterable, Optional
 from zoneinfo import ZoneInfo
 
@@ -33,6 +34,14 @@ PUBLISH_CHAT_ID = (
     or os.getenv("TELEGRAM_PUBLISH_CHAT_ID")
     or ""
 ).strip()
+FANTASY_SYNC_URL = os.getenv("FANTASY_SYNC_URL", "").strip()
+FANTASY_ADMIN_ACTION_KEY = os.getenv("FANTASY_ADMIN_ACTION_KEY", "").strip()
+FANTASY_ADMIN_ID = os.getenv("FANTASY_ADMIN_ID", "").strip()
+FANTASY_SYNC_ACTIONS = [
+    item.strip()
+    for item in (os.getenv("FANTASY_SYNC_ACTIONS", "refresh_matches,send_notification_queue") or "").split(",")
+    if item.strip()
+]
 
 
 def _publish_chat_id(chat_id: int) -> int | str:
@@ -61,6 +70,36 @@ def _tg_send_message(chat_id: int, text: str) -> bool:
     except urllib.error.URLError as e:
         print(f"[tg] send_message failed for chat_id={chat_id}: {e}")
         return False
+
+
+def _fantasy_sync_action(action: str) -> Dict[str, Any]:
+    if not (FANTASY_SYNC_URL and FANTASY_ADMIN_ACTION_KEY and FANTASY_ADMIN_ID):
+        return {"action": action, "ok": False, "skipped": "not_configured"}
+
+    query = urllib.parse.urlencode(
+        {
+            "adminAction": action,
+            "key": FANTASY_ADMIN_ACTION_KEY,
+            "adminId": FANTASY_ADMIN_ID,
+        }
+    )
+    separator = "&" if "?" in FANTASY_SYNC_URL else "?"
+    url = f"{FANTASY_SYNC_URL}{separator}{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=110) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        print(f"[OK] fantasy sync action={action} ok={data.get('ok')}")
+        return {"action": action, **data}
+    except Exception as exc:
+        print(f"[WARN] fantasy sync failed action={action}: {exc}")
+        return {"action": action, "ok": False, "error": str(exc)}
+
+
+def sync_fantasy_results() -> list[Dict[str, Any]]:
+    if not FANTASY_SYNC_ACTIONS:
+        return []
+    return [_fantasy_sync_action(action) for action in FANTASY_SYNC_ACTIONS]
 
 
 async def _fetch_and_cache(day: dt.date) -> dict:
@@ -287,8 +326,9 @@ async def run_once(days: Optional[Iterable[dt.date]] = None, *, include_yesterda
         if summary_sent:
             print(f"[OK] daily summaries sent={summary_sent} day={day}")
 
+    fantasy_sync = sync_fantasy_results()
     print(f"[OK] result notifications sent={sent}")
-    return {"sent": sent, "sources": sources}
+    return {"sent": sent, "sources": sources, "fantasy": fantasy_sync}
 
 if __name__ == "__main__":
     asyncio.run(run_once())
