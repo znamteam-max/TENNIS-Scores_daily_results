@@ -34,7 +34,7 @@ PUBLISH_CHAT_ID = (
     or os.getenv("TELEGRAM_PUBLISH_CHAT_ID")
     or ""
 ).strip()
-DEFAULT_FANTASY_SYNC_ACTIONS = "refresh_matches,send_notification_queue"
+DEFAULT_FANTASY_SYNC_ACTIONS = "auto"
 DEFAULT_FANTASY_SYNC_URL = (
     "https://script.google.com/macros/s/"
     "AKfycby-z8GyLJtqCF0Mm4zKa0uObgzaV0wUMzVHn3ZTeBIdBCLRwTozm8FSTvah-iZ_yw3e6A/exec"
@@ -73,11 +73,14 @@ def _tg_send_message(chat_id: int, text: str) -> bool:
 def _fantasy_sync_config(overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     overrides = overrides or {}
     actions_raw = overrides.get("actions") or os.getenv("FANTASY_SYNC_ACTIONS", DEFAULT_FANTASY_SYNC_ACTIONS)
+    actions = [item.strip() for item in str(actions_raw or "").split(",") if item.strip()]
+    if not actions or "auto" in actions:
+        actions = ["refresh_matches"] if dt.datetime.now(_tz()).minute % 2 == 0 else ["send_notification_queue"]
     return {
         "url": str(overrides.get("url") or os.getenv("FANTASY_SYNC_URL", DEFAULT_FANTASY_SYNC_URL)).strip(),
         "key": str(overrides.get("key") or os.getenv("FANTASY_ADMIN_ACTION_KEY", "")).strip(),
         "admin_id": str(overrides.get("admin_id") or os.getenv("FANTASY_ADMIN_ID", DEFAULT_FANTASY_ADMIN_ID)).strip(),
-        "actions": [item.strip() for item in str(actions_raw or "").split(",") if item.strip()],
+        "actions": actions,
     }
 
 
