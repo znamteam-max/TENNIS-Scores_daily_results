@@ -105,6 +105,22 @@ def _canonical_tournament(event: Dict[str, Any]) -> str:
     return str(event.get("tournament_name") or "")
 
 
+def _is_doubles(event: Dict[str, Any]) -> bool:
+    raw = event.get("raw") or {}
+    hay = " ".join(
+        str(value or "")
+        for value in (
+            raw.get("flashscore_league"),
+            event.get("season_name"),
+            event.get("tournament_name"),
+            event.get("tournament_status"),
+            event.get("home_name"),
+            event.get("away_name"),
+        )
+    ).lower()
+    return "/" in str(event.get("home_name") or "") or "/" in str(event.get("away_name") or "") or "парн" in hay or "doubles" in hay
+
+
 def _winner_side(event: Dict[str, Any]) -> str:
     raw = event.get("raw") or {}
     winner = raw.get("winnerCode")
@@ -246,6 +262,8 @@ class handler(BaseHTTPRequestHandler):
                 sources[source] = sources.get(source, 0) + 1
                 events = ss.normalize_events(data)
                 for event in events:
+                    if _is_doubles(event):
+                        continue
                     item = _item(event, day)
                     if not _matches_filter(item, pattern):
                         continue
