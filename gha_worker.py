@@ -93,6 +93,7 @@ def _fantasy_sync_action(action: str, config: Dict[str, Any]) -> Dict[str, Any]:
             "adminAction": action,
             "key": action_key,
             "adminId": admin_id,
+            "light": "1",
         }
     )
     separator = "&" if "?" in sync_url else "?"
