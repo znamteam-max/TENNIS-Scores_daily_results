@@ -159,6 +159,29 @@ def _is_excluded_draw(event: Dict[str, Any]) -> bool:
     return any(token in hay for token in blocked)
 
 
+def _pair_key(left: str, right: str) -> tuple[str, str]:
+    def clean(value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+    a = clean(left)
+    b = clean(right)
+    return tuple(sorted((a, b)))
+
+
+STALE_PAIR_KEYS = {
+    _pair_key("Дакворт Дж.", "Jodar R."),
+    _pair_key("James Duckworth", "Jodar R."),
+    _pair_key("Джонс Ф.", "Боузкова М."),
+    _pair_key("Jones F.", "Bouzkova M."),
+    _pair_key("Francesca Jones", "Bouzkova M."),
+    _pair_key("Leroux J.", "Reco A."),
+}
+
+
+def _is_stale_pair(event: Dict[str, Any]) -> bool:
+    return _pair_key(str(event.get("home_name") or ""), str(event.get("away_name") or "")) in STALE_PAIR_KEYS
+
+
 def _winner_side(event: Dict[str, Any]) -> str:
     raw = event.get("raw") or {}
     winner = raw.get("winnerCode")
@@ -300,7 +323,7 @@ class handler(BaseHTTPRequestHandler):
                 sources[source] = sources.get(source, 0) + 1
                 events = ss.normalize_events(data)
                 for event in events:
-                    if _is_doubles(event) or _is_excluded_draw(event):
+                    if _is_doubles(event) or _is_excluded_draw(event) or _is_stale_pair(event):
                         continue
                     item = _item(event, day)
                     if not _matches_filter(item, pattern):
