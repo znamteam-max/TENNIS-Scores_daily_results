@@ -121,6 +121,44 @@ def _is_doubles(event: Dict[str, Any]) -> bool:
     return "/" in str(event.get("home_name") or "") or "/" in str(event.get("away_name") or "") or "парн" in hay or "doubles" in hay
 
 
+def _is_excluded_draw(event: Dict[str, Any]) -> bool:
+    raw = event.get("raw") or {}
+    hay = " ".join(
+        str(value or "")
+        for value in (
+            raw.get("flashscore_league"),
+            raw.get("eventName"),
+            raw.get("name"),
+            raw.get("round"),
+            raw.get("stage"),
+            raw.get("statusDescription"),
+            event.get("season_name"),
+            event.get("tournament_name"),
+            event.get("tournament_status"),
+        )
+    ).lower()
+    blocked = (
+        "boys",
+        "girls",
+        "junior",
+        "juniors",
+        "qualification",
+        "qualifying",
+        "qualif",
+        "wheelchair",
+        "legends",
+        "mixed",
+        "юниор",
+        "юнош",
+        "девуш",
+        "квалиф",
+        "коляс",
+        "легенд",
+        "смеш",
+    )
+    return any(token in hay for token in blocked)
+
+
 def _winner_side(event: Dict[str, Any]) -> str:
     raw = event.get("raw") or {}
     winner = raw.get("winnerCode")
@@ -262,7 +300,7 @@ class handler(BaseHTTPRequestHandler):
                 sources[source] = sources.get(source, 0) + 1
                 events = ss.normalize_events(data)
                 for event in events:
-                    if _is_doubles(event):
+                    if _is_doubles(event) or _is_excluded_draw(event):
                         continue
                     item = _item(event, day)
                     if not _matches_filter(item, pattern):
