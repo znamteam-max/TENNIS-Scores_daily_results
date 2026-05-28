@@ -67,23 +67,15 @@ class handler(BaseHTTPRequestHandler):
                         fantasy_config=queue_with_sources_config,
                     )
                 ) or {}
-            elif has_fantasy_key and not explicit_fantasy_actions and dt.datetime.utcnow().minute % 3 == 1:
-                fantasy_config["actions"] = "refresh_matches"
+            elif has_fantasy_key and not explicit_fantasy_actions:
+                fantasy_config["actions"] = "send_notification_queue"
                 result = {
                     "sent": 0,
-                    "sources": [{"skipped": "source_fetch", "reason": "fantasy_refresh_phase"}],
+                    "sources": [{"skipped": "source_fetch", "reason": "fantasy_queue_phase"}],
                     "fantasy": sync_fantasy_results(fantasy_config),
                 }
             else:
-                if has_fantasy_key and not explicit_fantasy_actions:
-                    fantasy_config["actions"] = "send_notification_queue"
-                    result = {
-                        "sent": 0,
-                        "sources": [{"skipped": "source_fetch", "reason": "fantasy_queue_phase"}],
-                        "fantasy": sync_fantasy_results(fantasy_config),
-                    }
-                else:
-                    result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday, fantasy_config=fantasy_config)) or {}
+                result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday, fantasy_config=fantasy_config)) or {}
             payload = {"ok": True, **result}
         except Exception as exc:
             print(f"[ERR] cron poll failed: {exc}")
