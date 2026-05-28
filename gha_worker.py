@@ -95,14 +95,17 @@ def _fantasy_sync_action(action: str, config: Dict[str, Any]) -> Dict[str, Any]:
     if not (sync_url and action_key and admin_id):
         return {"action": action, "ok": False, "skipped": "not_configured"}
 
-    query = urllib.parse.urlencode(
-        {
-            "adminAction": action,
-            "key": action_key,
-            "adminId": admin_id,
-            "light": "1",
-        }
-    )
+    params = {
+        "adminAction": action,
+        "key": action_key,
+        "adminId": admin_id,
+        "light": "1",
+    }
+    # Keep poll-triggered refresh lean to avoid platform timeouts.
+    if action == "refresh_matches":
+        params["quick"] = "1"
+
+    query = urllib.parse.urlencode(params)
     separator = "&" if "?" in sync_url else "?"
     url = f"{sync_url}{separator}{query}"
     try:
