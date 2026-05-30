@@ -129,7 +129,18 @@ def _is_roland_target(value: str) -> bool:
 
 
 def _is_roland_hay(hay: str) -> bool:
-    return any(token in hay for token in ("roland", "garros", "french open", "france open"))
+    return any(
+        token in hay
+        for token in (
+            "roland",
+            "garros",
+            "french open",
+            "france open",
+            "ролан",
+            "гаррос",
+            "франц",
+        )
+    )
 
 
 def _is_target_tournament(event: Dict[str, Any], tournament: str, legacy_filter: str) -> bool:
