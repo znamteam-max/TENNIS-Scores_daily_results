@@ -258,6 +258,24 @@ def _copy_finished_state(target: Dict[str, Any], source: Dict[str, Any], reverse
     return target
 
 
+def _pending_debug_detail(
+    day: dt.date,
+    watch: Dict[str, Any],
+    event: Optional[Dict[str, Any]],
+    reason: str,
+) -> Dict[str, Any]:
+    return {
+        "day": day.isoformat(),
+        "event_id": int(watch["event_id"]),
+        "home_name": str((event or watch).get("home_name") or ""),
+        "away_name": str((event or watch).get("away_name") or ""),
+        "tournament_name": str((event or watch).get("tournament_name") or ""),
+        "status_type": ss.status_type(event) if event else "",
+        "score": ss.compact_score(event) if event else "",
+        "reason_not_sent": reason,
+    }
+
+
 def _include_yesterday_by_default() -> bool:
     return os.getenv("POLL_INCLUDE_YESTERDAY", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -267,6 +285,7 @@ async def run_once(
     *,
     include_yesterday: Optional[bool] = None,
     fantasy_config: Optional[Dict[str, Any]] = None,
+    debug: bool = False,
 ) -> dict[str, Any]:
     ensure_schema()
 
@@ -295,20 +314,21 @@ async def run_once(
         odds_saved = await cache_match_odds(day, events)
 
         pending = list_pending_match_watches(day)
-        sources.append(
-            {
-                "day": day.isoformat(),
-                "flashscore": len((data or {}).get("events", []) or []),
-                "sofascore": len((sofascore_data or {}).get("events", []) or []),
-                "espn": len((espn_data or {}).get("events", []) or []),
-                "pending": len(pending),
-                "odds_saved": odds_saved,
-            }
-        )
+        source_row = {
+            "day": day.isoformat(),
+            "flashscore": len((data or {}).get("events", []) or []),
+            "sofascore": len((sofascore_data or {}).get("events", []) or []),
+            "espn": len((espn_data or {}).get("events", []) or []),
+            "pending": len(pending),
+            "odds_saved": odds_saved,
+        }
+        pending_details: list[dict[str, Any]] = []
         published_events: set[tuple[dt.date, int]] = set()
         for watch in pending:
             event_key = (day, int(watch["event_id"]))
             if PUBLISH_CHAT_ID and event_key in published_events:
+                if debug:
+                    pending_details.append(_pending_debug_detail(day, watch, None, "already_notified"))
                 continue
             event = events_by_id.get(int(watch["event_id"]))
             if event and ss.is_finished(event):
@@ -317,6 +337,9 @@ async def run_once(
                 match_basis = event or watch
                 fallback_event, reversed_sides = _best_fallback_match(match_basis, fallback_events)
                 if not fallback_event:
+                    if debug:
+                        reason = "not_finished_in_flashscore" if event else "event_not_found_in_flashscore"
+                        pending_details.append(_pending_debug_detail(day, watch, event, reason))
                     continue
                 if event:
                     resolved_event = _copy_finished_state(event, fallback_event, reversed_sides)
@@ -332,6 +355,12 @@ async def run_once(
                     )
 
             if not ss.is_finished(resolved_event):
+                if debug:
+                    pending_details.append(_pending_debug_detail(day, watch, resolved_event, "fallback_found_but_not_finished"))
+                continue
+            if not ss.has_result_winner(resolved_event):
+                if debug:
+                    pending_details.append(_pending_debug_detail(day, watch, resolved_event, "no_result_winner"))
                 continue
 
             event = await ss.enrich_event(resolved_event)
@@ -350,10 +379,17 @@ async def run_once(
                         sent += 1
                 elif mark_match_notified(source_chat_id, day, int(watch["event_id"])):
                     sent += 1
+                if debug:
+                    pending_details.append(_pending_debug_detail(day, watch, event, "sent"))
+            elif debug:
+                pending_details.append(_pending_debug_detail(day, watch, event, "send_failed"))
 
         summary_sent = publish_daily_summaries(day, events, BOT_TOKEN, PUBLISH_CHAT_ID)
         if summary_sent:
             print(f"[OK] daily summaries sent={summary_sent} day={day}")
+        if debug:
+            source_row["pending_details"] = pending_details
+        sources.append(source_row)
 
     fantasy_sync = sync_fantasy_results(fantasy_config)
     print(f"[OK] result notifications sent={sent}")

@@ -7,7 +7,7 @@ import datetime as dt
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
-from gha_worker import run_once, sync_fantasy_results
+from gha_worker import run_once
 
 
 CRON_SECRET = os.getenv("CRON_SECRET", "").strip()
@@ -48,6 +48,7 @@ class handler(BaseHTTPRequestHandler):
                 if day:
                     days.append(day)
             include_yesterday = (query.get("include_yesterday") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
+            debug = (query.get("debug") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
             fantasy_config = {
                 "url": (query.get("fantasy_url") or [""])[0],
                 "key": (query.get("fantasy_key") or [""])[0],
@@ -58,24 +59,19 @@ class handler(BaseHTTPRequestHandler):
             has_fantasy_key = bool(fantasy_config.get("key") or os.getenv("FANTASY_ADMIN_ACTION_KEY", "").strip())
             explicit_fantasy_actions = bool(fantasy_config.get("actions"))
             if has_fantasy_key and not explicit_fantasy_actions and dt.datetime.utcnow().minute % 3 == 0:
-                queue_with_sources_config = dict(fantasy_config)
-                queue_with_sources_config["actions"] = "send_notification_queue"
-                result = asyncio.run(
-                    run_once(
-                        days or None,
-                        include_yesterday=include_yesterday,
-                        fantasy_config=queue_with_sources_config,
-                    )
-                ) or {}
-            elif has_fantasy_key and not explicit_fantasy_actions:
                 fantasy_config["actions"] = "send_notification_queue"
-                result = {
-                    "sent": 0,
-                    "sources": [{"skipped": "source_fetch", "reason": "fantasy_queue_phase"}],
-                    "fantasy": sync_fantasy_results(fantasy_config),
-                }
-            else:
-                result = asyncio.run(run_once(days or None, include_yesterday=include_yesterday, fantasy_config=fantasy_config)) or {}
+            elif has_fantasy_key and not explicit_fantasy_actions:
+                fantasy_config["actions"] = "0"
+            elif not explicit_fantasy_actions:
+                fantasy_config["actions"] = "0"
+            result = asyncio.run(
+                run_once(
+                    days or None,
+                    include_yesterday=include_yesterday,
+                    fantasy_config=fantasy_config,
+                    debug=debug,
+                )
+            ) or {}
             payload = {"ok": True, **result}
         except Exception as exc:
             print(f"[ERR] cron poll failed: {exc}")

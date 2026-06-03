@@ -378,6 +378,7 @@ def send_match_result(
     review_chat_id: Optional[ChatId] = None,
     review_in_publish_chat: bool = False,
     allow_text_fallback: bool = False,
+    allow_incomplete_card: bool = False,
     card_id: Optional[str] = None,
     delete_previous: bool = False,
 ) -> bool:
@@ -387,7 +388,7 @@ def send_match_result(
     card_id = (card_id or event.get("telegram_card_id") or "").strip() or uuid.uuid4().hex[:12]
     review_chat_id = review_chat_id if review_chat_id is not None else None
     event = _card_event(event)
-    if not ss.has_result_winner(event):
+    if not allow_incomplete_card and not ss.has_result_winner(event):
         print(
             "[card] skip result card without completed winner "
             f"event_id={event.get('event_id')} status={ss.status_type(event)}"

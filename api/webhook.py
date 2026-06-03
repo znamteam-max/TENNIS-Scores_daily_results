@@ -23,6 +23,7 @@ from db_pg import (
     get_state,
     get_tz,
     list_match_watches,
+    mark_event_notified,
     mark_match_notified,
     remove_match_watch,
     ru_name_for,
@@ -103,6 +104,18 @@ def _send_result(chat_id: int, event: Dict[str, Any]) -> bool:
         review_chat_id=chat_id,
         review_in_publish_chat=bool(PUBLISH_CHAT_ID),
         allow_text_fallback=False,
+    )
+
+
+def _send_result_manual(chat_id: int, event: Dict[str, Any]) -> bool:
+    return send_match_result(
+        BOT_TOKEN,
+        _publish_chat_id(chat_id),
+        event,
+        review_chat_id=chat_id,
+        review_in_publish_chat=bool(PUBLISH_CHAT_ID),
+        allow_text_fallback=False,
+        allow_incomplete_card=True,
     )
 
 
@@ -367,6 +380,181 @@ def _apply_score(event: Dict[str, Any], home: List[int], away: List[int]) -> Non
         raw["winnerCode"] = 1
     elif away[0] > home[0]:
         raw["winnerCode"] = 2
+
+
+def _clone_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    return json.loads(json.dumps(event, ensure_ascii=False, default=str))
+
+
+def _score_numbers(event: Dict[str, Any], side: str) -> List[str]:
+    raw = event.get("raw") or {}
+    key = "homeScore" if side == "home" else "awayScore"
+    score = raw.get(key) or {}
+    if not isinstance(score, dict):
+        return []
+    out: List[str] = []
+    current = score.get("current")
+    if current is None:
+        current = score.get("display")
+    if current is not None:
+        out.append(str(current))
+    for idx in range(1, 6):
+        value = score.get(f"period{idx}")
+        if value is not None:
+            out.append(str(value))
+    return out
+
+
+def _score_input_hint(event: Dict[str, Any]) -> str:
+    home = _score_numbers(event, "home")
+    away = _score_numbers(event, "away")
+    if len(home) >= 2 and len(away) >= 2:
+        return f"{' '.join(home[:6])} / {' '.join(away[:6])}"
+    return ""
+
+
+def _find_watch_row(chat_id: int, day: dt.date, event_id: int) -> Optional[Dict[str, Any]]:
+    for row in list_match_watches(chat_id, day):
+        if int(row["event_id"]) == int(event_id):
+            return row
+    return None
+
+
+def _watch_row_event(row: Dict[str, Any]) -> Dict[str, Any]:
+    category = str(row.get("category") or "")
+    group = "women" if category == "WTA" else "men"
+    return {
+        "event_id": int(row["event_id"]),
+        "category": category,
+        "tournament_name": str(row.get("tournament_name") or ""),
+        "tournament_status": category or "Other",
+        "tournament_sort_rank": 9,
+        "tour_group": group,
+        "tour_label": ss.tour_label(group),
+        "home_name": str(row.get("home_name") or "TBD"),
+        "away_name": str(row.get("away_name") or "TBD"),
+        "start_ts": row.get("start_ts"),
+        "status_type": "notstarted",
+        "raw": {
+            "status": {"type": "notstarted", "description": "Not started"},
+            "homeScore": {},
+            "awayScore": {},
+        },
+    }
+
+
+def _find_manual_event(chat_id: int, day: dt.date, event_id: int) -> Optional[Dict[str, Any]]:
+    event = _find_match(chat_id, event_id, day)
+    if event:
+        return event
+    row = _find_watch_row(chat_id, day, event_id)
+    return _watch_row_event(row) if row else None
+
+
+def _force_winner_menu(day: dt.date, event: Dict[str, Any]) -> Dict[str, Any]:
+    event_id = int(event["event_id"])
+    home = _display_side_name(event.get("home_name") or "Игрок 1")
+    away = _display_side_name(event.get("away_name") or "Игрок 2")
+    return _kb(
+        [
+            [_btn(home, f"force_winner|{day.isoformat()}|{event_id}|home")],
+            [_btn(away, f"force_winner|{day.isoformat()}|{event_id}|away")],
+            [_btn("Без победителя", f"force_winner|{day.isoformat()}|{event_id}|none")],
+            [_btn("Отмена", "force_cancel")],
+        ]
+    )
+
+
+def _force_winner_prompt(event: Dict[str, Any]) -> str:
+    status = ss.status_label(event)
+    score = ss.compact_score(event)
+    lines = [
+        "Матч ещё не завершён по данным источника. Кто победил?",
+        "",
+        f"{_display_side_name(event.get('home_name'))} - {_display_side_name(event.get('away_name'))}",
+        f"Статус источника: {status}",
+    ]
+    if score:
+        lines.append(f"Текущий счёт: {score}")
+    return "\n".join(lines).strip()
+
+
+def _force_score_prompt(event: Dict[str, Any]) -> str:
+    known = ss.compact_score(event) or "источник пока не дал счёт"
+    hint = _score_input_hint(event)
+    lines = [
+        "Пришли финальный счёт. Я подставил то, что знаю сейчас, можно просто поправить.",
+        "",
+        f"Сейчас: {known}",
+    ]
+    if hint:
+        lines.extend(["", "Можно прислать/поправить так:", hint])
+    lines.extend(["", "Примеры:", "2-1 (6-4, 3-6, 7-6)", "2 6 3 7 / 1 4 6 6"])
+    return "\n".join(lines).strip()
+
+
+def _apply_manual_winner(event: Dict[str, Any], winner_side: str) -> None:
+    raw = event.setdefault("raw", {})
+    if winner_side == "home":
+        event["card_winner_side"] = "home"
+        raw["winnerCode"] = 1
+    elif winner_side == "away":
+        event["card_winner_side"] = "away"
+        raw["winnerCode"] = 2
+    else:
+        event["card_winner_side"] = "none"
+        raw.pop("winnerCode", None)
+
+
+def _mark_manual_notified(chat_id: int, day: dt.date, event_id: int) -> None:
+    if PUBLISH_CHAT_ID:
+        mark_event_notified(day, event_id)
+    else:
+        mark_match_notified(chat_id, day, event_id)
+
+
+def _manual_publish_event(event: Dict[str, Any], winner_side: str, home: List[int], away: List[int]) -> Dict[str, Any]:
+    data = _clone_event(event)
+    _apply_score(data, home, away)
+    _apply_manual_winner(data, winner_side)
+    raw = data.setdefault("raw", {})
+    status = raw.setdefault("status", {})
+    status["type"] = "finished"
+    status.setdefault("description", "Finished")
+    data["status_type"] = "finished"
+    return data
+
+
+def _handle_force_publish_score(chat_id: int, text: str, payload: Dict[str, Any], user_id: Optional[int] = None) -> None:
+    editor_id = payload.get("editor_id")
+    if editor_id and user_id and int(editor_id) != int(user_id):
+        return
+    if not payload.get("winner_side"):
+        tg_send_message(chat_id, "Сначала выбери победителя кнопкой под сообщением.")
+        return
+    value = (text or "").strip()
+    if value.lower() in {"/cancel", "cancel", "отмена"}:
+        clear_state(chat_id)
+        tg_send_message(chat_id, "Ок, ручная публикация отменена.")
+        return
+    scores = _parse_score(value)
+    if not scores:
+        tg_send_message(chat_id, "Не понял счёт. Пример: 2-1 (6-4, 3-6, 7-6) или 2 6 3 7 / 1 4 6 6")
+        return
+    day = _parse_day(chat_id, payload.get("day"))
+    event_id = int(payload.get("event_id"))
+    event = _find_manual_event(chat_id, day, event_id)
+    if not event:
+        clear_state(chat_id)
+        tg_send_message(chat_id, "Не нашел матч. Вернись в /my и выбери его заново.")
+        return
+    manual_event = _manual_publish_event(event, str(payload.get("winner_side") or "none"), scores[0], scores[1])
+    tg_send_message(chat_id, "Отправляю плашку вручную.")
+    if _send_result_manual(chat_id, manual_event):
+        _mark_manual_notified(chat_id, day, event_id)
+        clear_state(chat_id)
+    else:
+        tg_send_message(chat_id, "Не смог отправить плашку. Попробуй ещё раз или пришли другой счёт.")
 
 
 def _handle_card_edit_text(chat_id: int, text: str, payload: Dict[str, Any]) -> None:
@@ -933,7 +1121,14 @@ def _my_matches_menu(chat_id: int, day: Optional[dt.date] = None) -> Dict[str, A
     for row in list_match_watches(chat_id, day)[:100]:
         time = _fmt_ts(chat_id, row.get("start_ts"))
         prefix = f"{time} - " if time else ""
-        rows.append([_btn(_cut(f"Убрать: {prefix}{_display_side_name(row['home_name'])} - {_display_side_name(row['away_name'])}"), f"watch_del|{row['event_id']}")])
+        event_id = int(row["event_id"])
+        rows.append([_btn(_cut(f"{prefix}{_display_side_name(row['home_name'])} - {_display_side_name(row['away_name'])}"), "noop")])
+        rows.append(
+            [
+                _btn("Опубликовать вручную", f"watch_force|{day.isoformat()}|{event_id}"),
+                _btn("Убрать", f"watch_del|{day.isoformat()}|{event_id}"),
+            ]
+        )
     rows.append([_btn("В начало", "menu|root")])
     return _kb(rows)
 
@@ -1001,6 +1196,18 @@ def _handle_text(chat_id: int, text: str, user_id: Optional[int] = None) -> None
         _refresh_summary_review(summary_id)
         clear_state(chat_id)
         tg_send_message(chat_id, f"Сохранил фамилии и обновил итог: {home_name} / {away_name}")
+        return
+
+    if state == "force_publish_choose_winner":
+        if raw.lower() in {"/cancel", "cancel", "отмена"}:
+            clear_state(chat_id)
+            tg_send_message(chat_id, "Ок, ручная публикация отменена.")
+            return
+        tg_send_message(chat_id, "Сначала выбери победителя кнопкой под сообщением, потом пришли финальный счёт.")
+        return
+
+    if state == "force_publish_score":
+        _handle_force_publish_score(chat_id, raw, payload, user_id=user_id)
         return
 
     if state == "editing_card":
@@ -1529,6 +1736,61 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             tg_answer_callback_query(cq_id, notice)
             return
 
+        if data.startswith("watch_force|"):
+            parts = data.split("|")
+            if len(parts) == 3:
+                _, day_s, event_id_s = parts
+                day = _parse_day(chat_id, day_s)
+            else:
+                _, event_id_s = parts
+                day = _active_day(chat_id)
+            event_id = int(event_id_s)
+            if not _find_watch_row(chat_id, day, event_id):
+                tg_answer_callback_query(cq_id, "Матч не найден в /my", show_alert=True)
+                return
+            event = _find_manual_event(chat_id, day, event_id)
+            if not event:
+                tg_answer_callback_query(cq_id, "Матч не найден в выбранном расписании", show_alert=True)
+                return
+            if ss.has_result_winner(event):
+                event = asyncio.run(ss.enrich_event(event))
+                if _send_result(chat_id, event):
+                    _mark_manual_notified(chat_id, day, event_id)
+                    tg_answer_callback_query(cq_id, "Отправил")
+                else:
+                    tg_answer_callback_query(cq_id, "Не смог отправить", show_alert=True)
+                return
+            payload: Dict[str, Any] = {"event_id": event_id, "day": day.isoformat()}
+            if user_id:
+                payload["editor_id"] = int(user_id)
+            set_state(chat_id, "force_publish_choose_winner", payload)
+            tg_edit_message(chat_id, message_id, _force_winner_prompt(event), reply_markup=_force_winner_menu(day, event))
+            tg_answer_callback_query(cq_id)
+            return
+
+        if data.startswith("force_winner|"):
+            _, day_s, event_id_s, winner_side = data.split("|", 3)
+            day = _parse_day(chat_id, day_s)
+            event_id = int(event_id_s)
+            event = _find_manual_event(chat_id, day, event_id)
+            if not event:
+                clear_state(chat_id)
+                tg_answer_callback_query(cq_id, "Матч не найден", show_alert=True)
+                return
+            payload = {"event_id": event_id, "day": day.isoformat(), "winner_side": winner_side}
+            if user_id:
+                payload["editor_id"] = int(user_id)
+            set_state(chat_id, "force_publish_score", payload)
+            tg_edit_message(chat_id, message_id, _force_score_prompt(event))
+            tg_answer_callback_query(cq_id, "Теперь пришли счёт")
+            return
+
+        if data == "force_cancel":
+            clear_state(chat_id)
+            tg_edit_message(chat_id, message_id, "Ручная публикация отменена.")
+            tg_answer_callback_query(cq_id)
+            return
+
         if data.startswith("alias_match|"):
             _, event_id_s = data.split("|", 1)
             event_id = int(event_id_s)
@@ -1589,8 +1851,13 @@ def _handle_callback(chat_id: int, message_id: int, cq_id: str, data: str, user_
             return
 
         if data.startswith("watch_del|"):
-            _, event_id_s = data.split("|", 1)
-            day = _active_day(chat_id)
+            parts = data.split("|")
+            if len(parts) == 3:
+                _, day_s, event_id_s = parts
+                day = _parse_day(chat_id, day_s)
+            else:
+                _, event_id_s = parts
+                day = _active_day(chat_id)
             removed = remove_match_watch(chat_id, day, int(event_id_s))
             tg_edit_message(chat_id, message_id, _my_matches_text(chat_id, day), reply_markup=_my_matches_menu(chat_id, day))
             tg_answer_callback_query(cq_id, "Матч удален" if removed else "Матч уже был удален")
