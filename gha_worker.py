@@ -40,6 +40,7 @@ DEFAULT_FANTASY_SYNC_URL = (
     "AKfycby-z8GyLJtqCF0Mm4zKa0uObgzaV0wUMzVHn3ZTeBIdBCLRwTozm8FSTvah-iZ_yw3e6A/exec"
 )
 DEFAULT_FANTASY_ADMIN_ID = "52203584"
+_FINISHED_GATE_SEEN: dict[str, set[int]] = {}
 
 
 def _publish_chat_id(chat_id: int) -> int | str:
@@ -138,7 +139,7 @@ async def _fetch_and_cache(day: dt.date) -> dict:
     return data or {"events": []}
 
 
-async def _fetch_sources(day: dt.date) -> tuple[dict, dict, dict]:
+async def _fetch_sources(day: dt.date, *, cache: bool = True) -> tuple[dict, dict, dict]:
     primary_result, sofascore_result, espn_result = await asyncio.gather(
         ss.events_by_date(day),
         sofascore_fallback.events_by_date(day),
@@ -164,14 +165,93 @@ async def _fetch_sources(day: dt.date) -> tuple[dict, dict, dict]:
     else:
         espn = espn_result or {"source": "espn", "events": []}
 
-    set_events_cache(day, primary)
+    if cache:
+        set_events_cache(day, primary)
     print(
-        "[OK] cache updated for "
-        f"{day}, flashscore={len((primary or {}).get('events', []) or [])}, "
+        "[OK] source fetch for "
+        f"{day}, cache={'yes' if cache else 'no'}, "
+        f"flashscore={len((primary or {}).get('events', []) or [])}, "
         f"sofascore={len((sofascore or {}).get('events', []) or [])}, "
         f"espn={len((espn or {}).get('events', []) or [])}"
     )
     return primary, sofascore, espn
+
+
+def _source_count(data: dict) -> int:
+    return len((data or {}).get("events", []) or [])
+
+
+def _source_row(day: dt.date, data: dict, sofascore_data: dict, espn_data: dict) -> dict[str, Any]:
+    return {
+        "day": day.isoformat(),
+        "flashscore": _source_count(data),
+        "sofascore": _source_count(sofascore_data),
+        "espn": _source_count(espn_data),
+    }
+
+
+def _db_gate_mode() -> str:
+    return (os.getenv("POLL_DB_WAKE_MODE") or "finish_gate").strip().lower().replace("-", "_")
+
+
+def _db_gate_enabled(days: Optional[Iterable[dt.date]], debug: bool) -> bool:
+    if debug or days is not None:
+        return False
+    return _db_gate_mode() not in {"0", "off", "false", "no", "always", "db_first"}
+
+
+def _finished_ids_from_sources(data: dict, sofascore_data: dict, espn_data: dict) -> set[int]:
+    finished: set[int] = set()
+    for source in (data, sofascore_data, espn_data):
+        for event in ss.normalize_events(source):
+            try:
+                event_id = int(event["event_id"])
+            except Exception:
+                continue
+            if ss.is_finished(event) and ss.has_result_winner(event):
+                finished.add(event_id)
+    return finished
+
+
+def _remember_finished(day: dt.date, finished_ids: set[int]) -> set[int]:
+    key = day.isoformat()
+    today = today_local()
+    for existing in list(_FINISHED_GATE_SEEN):
+        try:
+            existing_day = dt.date.fromisoformat(existing)
+        except Exception:
+            existing_day = today
+        if existing_day < today - dt.timedelta(days=3):
+            _FINISHED_GATE_SEEN.pop(existing, None)
+
+    seen = _FINISHED_GATE_SEEN.setdefault(key, set())
+    new_ids = {event_id for event_id in finished_ids if event_id not in seen}
+    seen.update(finished_ids)
+    return new_ids
+
+
+async def _probe_sources_without_db(run_days: set[dt.date]) -> tuple[dict[dt.date, tuple[dict, dict, dict]], list[dict[str, Any]], bool]:
+    snapshots: dict[dt.date, tuple[dict, dict, dict]] = {}
+    rows: list[dict[str, Any]] = []
+    should_open_db = False
+    for day in sorted(run_days, reverse=True):
+        data, sofascore_data, espn_data = await _fetch_sources(day, cache=False)
+        snapshots[day] = (data, sofascore_data, espn_data)
+        finished_ids = _finished_ids_from_sources(data, sofascore_data, espn_data)
+        new_finished_ids = _remember_finished(day, finished_ids)
+        if new_finished_ids:
+            should_open_db = True
+        row = _source_row(day, data, sofascore_data, espn_data)
+        row.update(
+            {
+                "db": "pending" if new_finished_ids else "skipped",
+                "reason": "new_finished_events" if new_finished_ids else "no_new_finished_events",
+                "finished_seen": len(finished_ids),
+                "new_finished": len(new_finished_ids),
+            }
+        )
+        rows.append(row)
+    return snapshots, rows, should_open_db
 
 
 def _norm_tokens(value: Any) -> set[str]:
@@ -287,8 +367,6 @@ async def run_once(
     fantasy_config: Optional[Dict[str, Any]] = None,
     debug: bool = False,
 ) -> dict[str, Any]:
-    ensure_schema()
-
     today = today_local()
     if days is None:
         run_days = {today}
@@ -297,6 +375,22 @@ async def run_once(
             run_days.add(today - dt.timedelta(days=1))
     else:
         run_days = set(days)
+
+    source_snapshots: dict[dt.date, tuple[dict, dict, dict]] = {}
+    if _db_gate_enabled(days, debug):
+        source_snapshots, gate_sources, should_open_db = await _probe_sources_without_db(run_days)
+        if not should_open_db:
+            fantasy_sync = sync_fantasy_results(fantasy_config)
+            print("[OK] result poll skipped DB: no new finished events")
+            return {
+                "sent": 0,
+                "sources": gate_sources,
+                "db": "skipped",
+                "skip_reason": "no_new_finished_events",
+                "fantasy": fantasy_sync,
+            }
+
+    ensure_schema()
     run_days.update(list_pending_match_watch_days())
 
     if not BOT_TOKEN:
@@ -307,7 +401,11 @@ async def run_once(
     sent = 0
     sources: list[dict[str, Any]] = []
     for day in sorted(run_days, reverse=True):
-        data, sofascore_data, espn_data = await _fetch_sources(day)
+        if day in source_snapshots:
+            data, sofascore_data, espn_data = source_snapshots[day]
+            set_events_cache(day, data)
+        else:
+            data, sofascore_data, espn_data = await _fetch_sources(day)
         events = ss.normalize_events(data)
         fallback_events = ss.normalize_events(sofascore_data) + ss.normalize_events(espn_data)
         events_by_id = {int(e["event_id"]): e for e in events}
@@ -315,12 +413,10 @@ async def run_once(
 
         pending = list_pending_match_watches(day)
         source_row = {
-            "day": day.isoformat(),
-            "flashscore": len((data or {}).get("events", []) or []),
-            "sofascore": len((sofascore_data or {}).get("events", []) or []),
-            "espn": len((espn_data or {}).get("events", []) or []),
+            **_source_row(day, data, sofascore_data, espn_data),
             "pending": len(pending),
             "odds_saved": odds_saved,
+            "db": "used",
         }
         pending_details: list[dict[str, Any]] = []
         published_events: set[tuple[dt.date, int]] = set()
@@ -394,6 +490,7 @@ async def run_once(
     fantasy_sync = sync_fantasy_results(fantasy_config)
     print(f"[OK] result notifications sent={sent}")
     return {"sent": sent, "sources": sources, "fantasy": fantasy_sync}
+
 
 if __name__ == "__main__":
     asyncio.run(run_once())
