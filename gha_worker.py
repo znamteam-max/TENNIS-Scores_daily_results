@@ -25,6 +25,7 @@ from providers import espn_fallback
 from providers import sofascore as ss
 from providers import sofascore_fallback
 from telegram_media import send_match_result
+import watchlist_gate
 
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -200,6 +201,13 @@ def _db_gate_enabled(days: Optional[Iterable[dt.date]], debug: bool) -> bool:
     return _db_gate_mode() not in {"0", "off", "false", "no", "always", "db_first"}
 
 
+def _watchlist_refresh_minutes() -> int:
+    try:
+        return max(1, int(os.getenv("POLL_WATCHLIST_REFRESH_MINUTES", "15")))
+    except Exception:
+        return 15
+
+
 def _finished_ids_from_sources(data: dict, sofascore_data: dict, espn_data: dict) -> set[int]:
     finished: set[int] = set()
     for source in (data, sofascore_data, espn_data):
@@ -252,6 +260,43 @@ async def _probe_sources_without_db(run_days: set[dt.date]) -> tuple[dict[dt.dat
         )
         rows.append(row)
     return snapshots, rows, should_open_db
+
+
+async def _probe_watchlist_without_db(
+    watch_ids_by_day: dict[dt.date, set[int]],
+) -> tuple[dict[dt.date, tuple[dict, dict, dict]], list[dict[str, Any]], bool]:
+    snapshots: dict[dt.date, tuple[dict, dict, dict]] = {}
+    rows: list[dict[str, Any]] = []
+    should_open_db = False
+    for day in sorted(watch_ids_by_day, reverse=True):
+        data, sofascore_data, espn_data = await _fetch_sources(day, cache=False)
+        snapshots[day] = (data, sofascore_data, espn_data)
+        finished_ids = _finished_ids_from_sources(data, sofascore_data, espn_data)
+        selected_finished = finished_ids.intersection(watch_ids_by_day.get(day) or set())
+        if selected_finished:
+            should_open_db = True
+        row = _source_row(day, data, sofascore_data, espn_data)
+        row.update(
+            {
+                "db": "pending" if selected_finished else "skipped",
+                "reason": "selected_finished_events" if selected_finished else "no_selected_finished_events",
+                "active_watches": len(watch_ids_by_day.get(day) or set()),
+                "selected_finished": len(selected_finished),
+            }
+        )
+        rows.append(row)
+    return snapshots, rows, should_open_db
+
+
+def _refresh_watchlist_gate(run_days: set[dt.date]) -> None:
+    if not watchlist_gate.configured():
+        return
+    rows_by_day: dict[dt.date, list[dict[str, Any]]] = {}
+    for day in sorted(run_days, reverse=True):
+        rows_by_day[day] = list_pending_match_watches(day)
+    payload = watchlist_gate.build_payload(rows_by_day)
+    if watchlist_gate.save(payload):
+        print(f"[watchlist] refreshed active watches={payload.get('total', 0)}")
 
 
 def _norm_tokens(value: Any) -> set[str]:
@@ -378,20 +423,57 @@ async def run_once(
 
     source_snapshots: dict[dt.date, tuple[dict, dict, dict]] = {}
     if _db_gate_enabled(days, debug):
-        source_snapshots, gate_sources, should_open_db = await _probe_sources_without_db(run_days)
-        if not should_open_db:
-            fantasy_sync = sync_fantasy_results(fantasy_config)
-            print("[OK] result poll skipped DB: no new finished events")
-            return {
-                "sent": 0,
-                "sources": gate_sources,
-                "db": "skipped",
-                "skip_reason": "no_new_finished_events",
-                "fantasy": fantasy_sync,
-            }
+        watchlist_payload = watchlist_gate.load()
+        if watchlist_payload is not None and not watchlist_gate.is_stale(
+            watchlist_payload, _watchlist_refresh_minutes()
+        ):
+            watch_ids_by_day = watchlist_gate.events_by_day(watchlist_payload)
+            if not watch_ids_by_day:
+                fantasy_sync = sync_fantasy_results(fantasy_config)
+                print("[OK] result poll skipped DB: no active watches in gate")
+                return {
+                    "sent": 0,
+                    "sources": [],
+                    "db": "skipped",
+                    "skip_reason": "no_active_watches",
+                    "watchlist": {"configured": True, "total": 0, "stale": False},
+                    "fantasy": fantasy_sync,
+                }
+            source_snapshots, gate_sources, should_open_db = await _probe_watchlist_without_db(watch_ids_by_day)
+            if not should_open_db:
+                fantasy_sync = sync_fantasy_results(fantasy_config)
+                print("[OK] result poll skipped DB: no selected finished events")
+                return {
+                    "sent": 0,
+                    "sources": gate_sources,
+                    "db": "skipped",
+                    "skip_reason": "no_selected_finished_events",
+                    "watchlist": {
+                        "configured": True,
+                        "total": int(watchlist_payload.get("total") or 0),
+                        "stale": False,
+                    },
+                    "fantasy": fantasy_sync,
+                }
+        elif watchlist_payload is None:
+            source_snapshots, gate_sources, should_open_db = await _probe_sources_without_db(run_days)
+            if not should_open_db:
+                fantasy_sync = sync_fantasy_results(fantasy_config)
+                print("[OK] result poll skipped DB: no new finished events")
+                return {
+                    "sent": 0,
+                    "sources": gate_sources,
+                    "db": "skipped",
+                    "skip_reason": "no_new_finished_events",
+                    "watchlist": {"configured": False},
+                    "fantasy": fantasy_sync,
+                }
+        else:
+            print("[watchlist] gate stale or missing; opening DB to refresh active watches")
 
     ensure_schema()
     run_days.update(list_pending_match_watch_days())
+    _refresh_watchlist_gate(run_days)
 
     if not BOT_TOKEN:
         print("[WARN] TELEGRAM_BOT_TOKEN is not set; result notifications skipped")
