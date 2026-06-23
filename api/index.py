@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import types
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -45,10 +46,17 @@ def _route_path(raw_path: str) -> str:
 def _delegate_handler(request: BaseHTTPRequestHandler, module_name: str) -> bool:
     module = _module(module_name)
     target = getattr(module, "handler", None)
-    method = getattr(target, f"do_{request.command}", None) if target else None
+    if not target:
+        return False
+
+    for name, value in target.__dict__.items():
+        if callable(value) and not name.startswith("__"):
+            setattr(request, name, types.MethodType(value, request))
+
+    method = getattr(request, f"do_{request.command}", None)
     if not method:
         return False
-    method(request)
+    method()
     return True
 
 
