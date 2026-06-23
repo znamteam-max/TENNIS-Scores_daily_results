@@ -14,6 +14,7 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 ALLOWED_HOSTS = {
     "tennis-scores-daily-results.vercel.app",
     "tennis-scores-daily-results-1.vercel.app",
+    "tennis-scores-daily-results-main.vercel.app",
 }
 
 
