@@ -1,16 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/webhook.py": {
-      "maxDuration": 60
-    },
-    "api/poll.py": {
-      "maxDuration": 60
-    },
-    "api/fantasy_matches.py": {
-      "maxDuration": 60
-    },
-    "api/card_preview.py": {
+    "api/*.py": {
       "maxDuration": 60
     }
   },
