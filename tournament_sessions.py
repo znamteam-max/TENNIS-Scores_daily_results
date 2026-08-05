@@ -38,8 +38,10 @@ def install_poll(module: Any) -> None:
 def install_api_module(module: Any, route_name: str) -> Any:
     if route_name == "webhook" and "webhook" not in _INSTALLED:
         from tournament_session_webhook import install
+        from tournament_session_ui_patch import install as install_ui_patch
 
         install(module)
+        install_ui_patch(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
