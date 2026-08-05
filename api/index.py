@@ -31,11 +31,19 @@ def _json(handler: BaseHTTPRequestHandler, payload: dict, status: int = 200) -> 
 
 def _module(name: str):
     try:
-        return importlib.import_module(f"api.{name}")
+        module = importlib.import_module(f"api.{name}")
     except ModuleNotFoundError as exc:
         if exc.name not in {"api", f"api.{name}"}:
             raise
-        return importlib.import_module(name)
+        module = importlib.import_module(name)
+
+    try:
+        from tournament_sessions import install_api_module
+
+        install_api_module(module, name)
+    except Exception as exc:
+        print(f"[sessions] install failed route={name}: {exc}")
+    return module
 
 
 def _route_path(raw_path: str) -> str:
