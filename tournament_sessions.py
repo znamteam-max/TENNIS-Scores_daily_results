@@ -40,10 +40,12 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from tournament_session_webhook import install
         from tournament_session_ui_patch import install as install_ui_patch
         from tournament_stage_full_scan_patch import install as install_full_stage_scan
+        from tournament_aug25_fix import install as install_aug25_fix
 
         install(module)
         install_ui_patch(module)
         install_full_stage_scan(module)
+        install_aug25_fix(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
