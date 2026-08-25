@@ -13,7 +13,9 @@ def install_poll(module: Any) -> None:
         return
     store.install_round_capture()
     import gha_worker
+    from tournament_aug25_followup import install_common
 
+    install_common()
     old_send = gha_worker.send_match_result
 
     def send(token, chat, event, *args, **kwargs):
@@ -21,6 +23,7 @@ def install_poll(module: Any) -> None:
         if context:
             event = copy.deepcopy(event)
             event["tournament_name"] = context.get("tournament_name") or event.get("tournament_name")
+            event["session_day"] = context.get("session_day") or event.get("session_day")
             if context.get("stage"):
                 event["stage"] = context["stage"]
                 event.setdefault("raw", {})["flashscore_round"] = context["stage"]
@@ -41,11 +44,14 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from tournament_session_ui_patch import install as install_ui_patch
         from tournament_stage_full_scan_patch import install as install_full_stage_scan
         from tournament_aug25_fix import install as install_aug25_fix
+        from tournament_aug25_followup import install_common, install_webhook
 
+        install_common()
         install(module)
         install_ui_patch(module)
         install_full_stage_scan(module)
         install_aug25_fix(module)
+        install_webhook(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
