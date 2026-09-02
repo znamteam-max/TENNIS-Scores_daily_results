@@ -14,8 +14,11 @@ def install_poll(module: Any) -> None:
     store.install_round_capture()
     import gha_worker
     from tournament_aug25_followup import install_common
+    from tournament_sep2_fix import install_poll_safety, install_store_safety
 
     install_common()
+    install_store_safety()
+    install_poll_safety(gha_worker)
     old_send = gha_worker.send_match_result
 
     def send(token, chat, event, *args, **kwargs):
@@ -46,14 +49,17 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from tournament_aug25_fix import install as install_aug25_fix
         from tournament_aug25_followup import install_common, install_webhook
         from compact_match_list_patch import install as install_compact_match_list
+        from tournament_sep2_fix import install_store_safety, install_webhook as install_sep2_webhook
 
         install_common()
+        install_store_safety()
         install(module)
         install_ui_patch(module)
         install_full_stage_scan(module)
         install_aug25_fix(module)
         install_webhook(module)
         install_compact_match_list(module)
+        install_sep2_webhook(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
