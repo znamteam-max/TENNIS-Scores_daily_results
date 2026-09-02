@@ -45,6 +45,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from tournament_stage_full_scan_patch import install as install_full_stage_scan
         from tournament_aug25_fix import install as install_aug25_fix
         from tournament_aug25_followup import install_common, install_webhook
+        from compact_match_list_patch import install as install_compact_match_list
 
         install_common()
         install(module)
@@ -52,6 +53,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         install_full_stage_scan(module)
         install_aug25_fix(module)
         install_webhook(module)
+        install_compact_match_list(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
