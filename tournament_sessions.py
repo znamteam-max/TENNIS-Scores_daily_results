@@ -50,6 +50,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from tournament_aug25_followup import install_common, install_webhook
         from compact_match_list_patch import install as install_compact_match_list
         from tournament_sep2_fix import install_store_safety, install_webhook as install_sep2_webhook
+        from tournament_sep2_all_matches_patch import install as install_all_matches
 
         install_common()
         install_store_safety()
@@ -60,6 +61,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         install_webhook(module)
         install_compact_match_list(module)
         install_sep2_webhook(module)
+        install_all_matches(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
