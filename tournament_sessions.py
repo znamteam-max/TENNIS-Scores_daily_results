@@ -52,6 +52,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from tournament_sep2_fix import install_store_safety, install_webhook as install_sep2_webhook
         from tournament_sep2_all_matches_patch import install as install_all_matches
         from player_alias_admin_patch import install as install_player_alias_admin
+        from player_alias_search_v2_patch import install as install_player_alias_search_v2
 
         install_common()
         install_store_safety()
@@ -64,6 +65,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         install_sep2_webhook(module)
         install_all_matches(module)
         install_player_alias_admin(module)
+        install_player_alias_search_v2(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
