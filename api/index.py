@@ -12,6 +12,7 @@ HANDLER_ROUTES = {
     "/api/fantasy_matches": "fantasy_matches",
     "/api/poll": "poll",
     "/api/set_webhook": "set_webhook",
+    "/api/uso_research": "uso_research",
     "/api/webhook": "webhook",
 }
 
