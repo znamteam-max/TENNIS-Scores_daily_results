@@ -12,13 +12,18 @@ def install_poll(module: Any) -> None:
     if "poll" in _INSTALLED:
         return
     store.install_round_capture()
+    import daily_summary
     import gha_worker
+    from auto_summary_complete_day_patch import install as install_auto_summary_guard
     from tournament_aug25_followup import install_common
     from tournament_sep2_fix import install_poll_safety, install_store_safety
 
     install_common()
     install_store_safety()
     install_poll_safety(gha_worker)
+    install_auto_summary_guard(daily_summary)
+    # gha_worker imported these functions directly, so refresh its bound reference.
+    gha_worker.publish_daily_summaries = daily_summary.publish_daily_summaries
     old_send = gha_worker.send_match_result
 
     def send(token, chat, event, *args, **kwargs):
