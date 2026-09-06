@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
-import re
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -134,6 +133,8 @@ def _published_event_ids_other_days(day: dt.date, group: str, tournament: str, s
                         where ds.day = sr.day
                           and ds.tour_group = sr.tour_group
                           and ds.tournament_name = sr.tournament_name
+                          and ds.tournament_status = sr.tournament_status
+                          and ds.stage = sr.stage
                    )
                 """,
                 (day, group or "", tournament or "", status or "", status or ""),
@@ -242,6 +243,10 @@ def install(module: Any) -> None:
             row = copy.deepcopy(event)
             row["session_day"] = day.isoformat()
             cleaned.append(row)
+        # Important: the older stage-aware builder falls back to its legacy
+        # builder when a day has only one stage. Pass the de-duplicated rows
+        # here as well so a result published yesterday cannot reappear today.
+        cleaned = _clean_summary_rows(cleaned, group, tournament, status)
         return old_summary_builder(day, cleaned, group, tournament, status, overrides=overrides)
 
     module.build_daily_summary_for_tournament = summary_builder
