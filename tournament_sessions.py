@@ -17,11 +17,13 @@ def install_poll(module: Any) -> None:
     from auto_summary_complete_day_patch import install as install_auto_summary_guard
     from tournament_aug25_followup import install_common
     from tournament_sep2_fix import install_poll_safety, install_store_safety
+    from tournament_sep6_validation_patch import install_poll as install_day_validation_poll
 
     install_common()
     install_store_safety()
     install_poll_safety(gha_worker)
     install_auto_summary_guard(daily_summary)
+    install_day_validation_poll(daily_summary)
     # gha_worker imported these functions directly, so refresh its bound reference.
     gha_worker.publish_daily_summaries = daily_summary.publish_daily_summaries
     old_send = gha_worker.send_match_result
@@ -58,6 +60,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from tournament_sep2_all_matches_patch import install as install_all_matches
         from player_alias_admin_patch import install as install_player_alias_admin
         from player_alias_search_v2_patch import install as install_player_alias_search_v2
+        from tournament_sep6_validation_patch import install as install_day_validation
 
         install_common()
         install_store_safety()
@@ -71,6 +74,9 @@ def install_api_module(module: Any, route_name: str) -> Any:
         install_all_matches(module)
         install_player_alias_admin(module)
         install_player_alias_search_v2(module)
+        # Must be last: it filters the final session/menu stack and validates
+        # summaries after all older UI patches have finished wrapping functions.
+        install_day_validation(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
