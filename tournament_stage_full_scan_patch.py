@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import html
-import re
-import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict
@@ -14,66 +11,20 @@ UNKNOWN_LABELS = {"Стадия не определена", "Раунд не н�
 
 
 def _stage_from_page(match: Dict[str, Any]) -> tuple[int, str]:
-    """Read the round from the Flashscore match page.
+    """Read the round only from this match page's own metadata.
 
-    Flashscore exposes the round in page metadata/breadcrumb text, but not
-    consistently in the daily score feed. Try the existing parser first,
-    then inspect the returned HTML for the visible round label.
+    Do not scan the whole HTML for words such as "Final": Flashscore pages can
+    contain navigation/related-match labels from other rounds, which used to
+    create false stage overrides.
     """
     event_id = int(match.get("event_id") or 0)
     try:
         import match_card
 
         stage = store.normalize_stage(match_card._stage_from_flashscore_page(match))  # type: ignore[attr-defined]
-        if stage:
-            return event_id, stage
-
-        raw = match.get("raw") or {}
-        match_id = raw.get("flashscore_id") or match.get("custom_id")
-        if not match_id:
-            return event_id, ""
-
-        base = str(getattr(match_card, "FLASHSCORE_BASE", "https://www.flashscorekz.com")).rstrip("/")
-        urls = [
-            f"{base}/match/{match_id}/#/match-summary",
-            f"{base}/match/{match_id}/",
-        ]
-        headers = {
-            "Accept": "text/html,*/*",
-            "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150 Safari/537.36",
-        }
-        for url in urls:
-            try:
-                request = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(request, timeout=6) as response:
-                    page = response.read().decode("utf-8", "replace")
-            except Exception:
-                continue
-
-            text = html.unescape(page).replace("\\/", "/").replace("\\u002F", "/")
-            candidates = []
-            candidates.extend(
-                re.findall(
-                    r"(?i)(?:^|[^0-9])1\s*/\s*(64|32|16|8|4|2)\s*[-–— ]*(?:finals?|финал(?:а)?)",
-                    text,
-                )
-            )
-            if candidates:
-                return event_id, f"1/{candidates[0]} финала"
-            if re.search(r"(?i)quarter[- ]?final|четвертьфин", text):
-                return event_id, "1/4 финала"
-            if re.search(r"(?i)semi[- ]?final|полуфин", text):
-                return event_id, "1/2 финала"
-            if re.search(r"(?i)(?:^|[> ,|·-])finals?(?:[< ,|·-]|$)|(?:^|[> ,|·-])финал(?:[< ,|·-]|$)", text):
-                return event_id, "Финал"
-            match_round = re.search(r"(?i)(?:round\s+of|last)\s+(128|64|32|16|8|4|2)", text)
-            if match_round:
-                size = int(match_round.group(1))
-                return event_id, "Финал" if size == 2 else f"1/{size // 2} финала"
+        return event_id, stage
     except Exception:
-        pass
-    return event_id, ""
+        return event_id, ""
 
 
 def install(module: Any) -> None:
@@ -135,8 +86,8 @@ def install(module: Any) -> None:
                 message_id,
                 (
                     f"🔎 {tournament}\n"
-                    f"Проверяю страницы всех матчей без раунда: {len(targets)}.\n"
-                    "Это может занять несколько секунд."
+                    f"Проверяю страницы матчей: {len(targets)}.\n"
+                    "Использую только стадию конкретного матча."
                 ),
             )
 
@@ -172,7 +123,7 @@ def install(module: Any) -> None:
             else:
                 module.tg_send_message(
                     chat_id,
-                    "Flashscore не отдал раунд ни для одного матча. Можно указать раунд вручную кнопками.",
+                    "Flashscore не отдал стадию конкретных матчей. Можно указать раунд вручную.",
                 )
             return
         except Exception as exc:
