@@ -12,6 +12,12 @@ SEPARATOR_RIGHT = 1048
 SEPARATOR_Y = 1154
 VERTICAL_TOP = 1065
 VERTICAL_BOTTOM = 1239
+PHOTO_LEFT = 65
+PHOTO_TOP = 0
+PHOTO_RIGHT = 1080
+PHOTO_BOTTOM = PANEL_TOP
+BACKGROUND_FULL = "result_background_full.png"
+LEGACY_BACKGROUND = "result_background.jpg"
 
 
 def _patch_match_card() -> None:
@@ -21,8 +27,6 @@ def _patch_match_card() -> None:
         return
 
     # Approved result-card geometry from the September 2026 reference.
-    # The score panel is intentionally lifted so social-app overlays do not
-    # sit on top of the score.
     match_card.BOTTOM_Y = PANEL_TOP
     match_card.PANEL = (20, 20, 25, 255)
     match_card.WHITE = (255, 255, 255, 255)
@@ -30,10 +34,8 @@ def _patch_match_card() -> None:
     match_card.ROW1_CENTER_Y = 1097
     match_card.ROW2_CENTER_Y = 1207
 
-    # match_card historically downloaded Sofia Sans into /tmp on first render.
-    # A cold Vercel function must not fail the whole card when that network
-    # request is temporarily unavailable, so keep the existing font first and
-    # fall back to system fonts only on an actual exception.
+    # Keep card rendering alive on a cold Vercel function even if the remote
+    # Sofia Sans download is temporarily unavailable.
     original_font = match_card._font
 
     @lru_cache(maxsize=128)
@@ -68,33 +70,52 @@ def _patch_match_card() -> None:
     match_card._font = _safe_font
 
     @lru_cache(maxsize=1)
-    def _background():
+    def _background_full():
+        """Load the designer-supplied 1080x1350 background without recreating it."""
         from PIL import Image
 
-        path = os.path.join(match_card.TEMPLATE_DIR, "result_background.jpg")
-        try:
-            image = Image.open(path)
-            image.load()
-            image = image.convert("RGBA")
-            if image.size != (match_card.W, match_card.H):
-                image = image.resize(
-                    (match_card.W, match_card.H),
-                    Image.Resampling.LANCZOS,
-                )
-            return image
-        except Exception as exc:
-            # Never lose result publication only because a decorative asset is
-            # unreadable. This fallback is intentionally simple; the normal
-            # production path above uses the approved supplied background.
-            print(f"[card] result background load failed: {exc}")
-            return Image.new("RGBA", (match_card.W, match_card.H), (61, 28, 115, 255))
+        preferred = os.path.join(match_card.TEMPLATE_DIR, BACKGROUND_FULL)
+        legacy = os.path.join(match_card.TEMPLATE_DIR, LEGACY_BACKGROUND)
+        path = preferred if os.path.exists(preferred) else legacy
+        if path == legacy:
+            print(
+                f"[card] WARNING {BACKGROUND_FULL} is missing; "
+                f"temporarily using {LEGACY_BACKGROUND}"
+            )
+
+        image = Image.open(path)
+        image.load()
+        image = image.convert("RGBA")
+        if image.size != (match_card.W, match_card.H):
+            raise ValueError(
+                f"result background has wrong size {image.size}; "
+                f"expected {(match_card.W, match_card.H)}"
+            )
+        return image
 
     def _base_template(count: int):
+        """
+        Build the frame from the supplied full background.
+
+        The player-photo area is physically cut out (transparent), exactly as
+        in the previous templates. Everything that remains visible around it
+        is therefore taken from the supplied background image itself: the full
+        left strip and the bottom strip below the raised score panel.
+        """
         from PIL import ImageDraw
 
-        image = _background().copy()
+        image = _background_full().copy()
         draw = ImageDraw.Draw(image)
 
+        # Real transparent hole for the player photo: x=65..1079, y=0..1009.
+        # match_card._overlay_photo() later fills exactly this 1015x1010 area.
+        draw.rectangle(
+            (PHOTO_LEFT, PHOTO_TOP, PHOTO_RIGHT - 1, PHOTO_BOTTOM - 1),
+            fill=(0, 0, 0, 0),
+        )
+
+        # Raised score panel. The supplied background remains untouched on the
+        # left and again below PANEL_BOTTOM, matching the approved reference.
         draw.rectangle(
             (match_card.LEFT_W, PANEL_TOP, match_card.W - 1, PANEL_BOTTOM),
             fill=match_card.PANEL,
