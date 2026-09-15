@@ -64,6 +64,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from player_alias_search_v2_patch import install as install_player_alias_search_v2
         from tournament_sep6_validation_patch import install as install_day_validation
         from menu_history_patch import install as install_menu_history
+        from known_major_backfill_patch import install as install_known_major_backfill
         from runtime_delivery_patch import install as install_delivery_resilience
 
         install_delivery_resilience()
@@ -79,10 +80,12 @@ def install_api_module(module: Any, route_name: str) -> Any:
         install_all_matches(module)
         install_player_alias_admin(module)
         install_player_alias_search_v2(module)
-        # Must run after older session/menu wrappers: first apply final day validation,
-        # then make the root/date navigation explicit without changing match filtering.
+        # Must run after older session/menu wrappers: validate the final event stack,
+        # add robust historical source recovery, then apply a last-resort known-major
+        # backfill so a completed major final cannot disappear from the menu.
         install_day_validation(module)
         install_menu_history(module)
+        install_known_major_backfill(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
