@@ -18,7 +18,9 @@ def install_poll(module: Any) -> None:
     from tournament_aug25_followup import install_common
     from tournament_sep2_fix import install_poll_safety, install_store_safety
     from tournament_sep6_validation_patch import install_poll as install_day_validation_poll
+    from runtime_delivery_patch import install as install_delivery_resilience
 
+    install_delivery_resilience()
     install_common()
     install_store_safety()
     install_poll_safety(gha_worker)
@@ -62,7 +64,9 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from player_alias_search_v2_patch import install as install_player_alias_search_v2
         from tournament_sep6_validation_patch import install as install_day_validation
         from menu_history_patch import install as install_menu_history
+        from runtime_delivery_patch import install as install_delivery_resilience
 
+        install_delivery_resilience()
         install_common()
         install_store_safety()
         install(module)
