@@ -37,7 +37,12 @@ def _patch_match_card() -> None:
         path = os.path.join(match_card.TEMPLATE_DIR, "result_background.jpg")
         if not os.path.exists(path):
             raise FileNotFoundError(f"result background not found: {path}")
-        image = Image.open(path).convert("RGBA")
+        try:
+            image = Image.open(path)
+            image.load()
+            image = image.convert("RGBA")
+        except Exception as exc:
+            raise RuntimeError(f"result background is invalid: {exc}") from exc
         if image.size != (match_card.W, match_card.H):
             image = image.resize(
                 (match_card.W, match_card.H),

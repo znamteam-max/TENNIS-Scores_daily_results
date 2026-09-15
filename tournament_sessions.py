@@ -61,6 +61,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from player_alias_admin_patch import install as install_player_alias_admin
         from player_alias_search_v2_patch import install as install_player_alias_search_v2
         from tournament_sep6_validation_patch import install as install_day_validation
+        from menu_history_patch import install as install_menu_history
 
         install_common()
         install_store_safety()
@@ -74,9 +75,10 @@ def install_api_module(module: Any, route_name: str) -> Any:
         install_all_matches(module)
         install_player_alias_admin(module)
         install_player_alias_search_v2(module)
-        # Must be last: it filters the final session/menu stack and validates
-        # summaries after all older UI patches have finished wrapping functions.
+        # Must run after older session/menu wrappers: first apply final day validation,
+        # then make the root/date navigation explicit without changing match filtering.
         install_day_validation(module)
+        install_menu_history(module)
         _INSTALLED.add("webhook")
     elif route_name == "poll":
         install_poll(module)
