@@ -21,8 +21,8 @@ def _patch_match_card() -> None:
         return
 
     # Approved result-card geometry from the September 2026 reference.
-    # The score panel is 64 px higher than the previous layout so social-app
-    # overlays do not sit on top of the score.
+    # The score panel is intentionally lifted so social-app overlays do not
+    # sit on top of the score.
     match_card.BOTTOM_Y = PANEL_TOP
     match_card.PANEL = (20, 20, 25, 255)
     match_card.WHITE = (255, 255, 255, 255)
@@ -30,25 +30,64 @@ def _patch_match_card() -> None:
     match_card.ROW1_CENTER_Y = 1097
     match_card.ROW2_CENTER_Y = 1207
 
+    # match_card historically downloaded Sofia Sans into /tmp on first render.
+    # A cold Vercel function must not fail the whole card when that network
+    # request is temporarily unavailable, so keep the existing font first and
+    # fall back to system fonts only on an actual exception.
+    original_font = match_card._font
+
+    @lru_cache(maxsize=128)
+    def _safe_font(kind: str, size: int):
+        try:
+            return original_font(kind, size)
+        except Exception as exc:
+            print(f"[card] primary font load failed kind={kind} size={size}: {exc}")
+            from PIL import ImageFont
+
+            if kind == "medium":
+                candidates = (
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    "DejaVuSans.ttf",
+                )
+            else:
+                candidates = (
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-BoldOblique.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+                    "DejaVuSans-BoldOblique.ttf",
+                    "DejaVuSans.ttf",
+                )
+            for path in candidates:
+                try:
+                    return ImageFont.truetype(path, size)
+                except Exception:
+                    continue
+            return ImageFont.load_default()
+
+    match_card._font = _safe_font
+
     @lru_cache(maxsize=1)
     def _background():
         from PIL import Image
 
         path = os.path.join(match_card.TEMPLATE_DIR, "result_background.jpg")
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"result background not found: {path}")
         try:
             image = Image.open(path)
             image.load()
             image = image.convert("RGBA")
+            if image.size != (match_card.W, match_card.H):
+                image = image.resize(
+                    (match_card.W, match_card.H),
+                    Image.Resampling.LANCZOS,
+                )
+            return image
         except Exception as exc:
-            raise RuntimeError(f"result background is invalid: {exc}") from exc
-        if image.size != (match_card.W, match_card.H):
-            image = image.resize(
-                (match_card.W, match_card.H),
-                Image.Resampling.LANCZOS,
-            )
-        return image
+            # Never lose result publication only because a decorative asset is
+            # unreadable. This fallback is intentionally simple; the normal
+            # production path above uses the approved supplied background.
+            print(f"[card] result background load failed: {exc}")
+            return Image.new("RGBA", (match_card.W, match_card.H), (61, 28, 115, 255))
 
     def _base_template(count: int):
         from PIL import ImageDraw
@@ -56,7 +95,6 @@ def _patch_match_card() -> None:
         image = _background().copy()
         draw = ImageDraw.Draw(image)
 
-        # Score block.
         draw.rectangle(
             (match_card.LEFT_W, PANEL_TOP, match_card.W - 1, PANEL_BOTTOM),
             fill=match_card.PANEL,
@@ -66,8 +104,6 @@ def _patch_match_card() -> None:
             fill=match_card.WHITE,
         )
 
-        # Score-column separators follow the same score centers as the
-        # dynamic text, so 2/3/4/5-set cards stay aligned.
         template_key = min(6, max(3, int(count)))
         centers = match_card._score_centers(template_key)
         for left, right in zip(centers, centers[1:]):
