@@ -19,8 +19,16 @@ def install_poll(module: Any) -> None:
     from tournament_sep2_fix import install_poll_safety, install_store_safety
     from tournament_sep6_validation_patch import install_poll as install_day_validation_poll
     from runtime_delivery_patch import install as install_delivery_resilience
+    from team_tournament_patch import (
+        install_daily_summary as install_team_summary,
+        install_provider as install_team_provider,
+        install_validation_hooks as install_team_validation,
+    )
 
     install_delivery_resilience()
+    install_team_provider()
+    install_team_summary(daily_summary)
+    install_team_validation()
     install_common()
     install_store_safety()
     install_poll_safety(gha_worker)
@@ -52,6 +60,7 @@ def install_poll(module: Any) -> None:
 
 def install_api_module(module: Any, route_name: str) -> Any:
     if route_name == "webhook" and "webhook" not in _INSTALLED:
+        import daily_summary
         from tournament_session_webhook import install
         from tournament_session_ui_patch import install as install_ui_patch
         from tournament_stage_full_scan_patch import install as install_full_stage_scan
@@ -66,8 +75,20 @@ def install_api_module(module: Any, route_name: str) -> Any:
         from menu_history_patch import install as install_menu_history
         from known_major_backfill_patch import install as install_known_major_backfill
         from runtime_delivery_patch import install as install_delivery_resilience
+        from team_tournament_patch import (
+            install_daily_summary as install_team_summary,
+            install_provider as install_team_provider,
+            install_store as install_team_store,
+            install_validation_hooks as install_team_validation,
+        )
 
         install_delivery_resilience()
+        # Team-event normalization must be installed before the session loader is
+        # wrapped, otherwise Davis Cup events are first filtered with one global
+        # tournament timezone.
+        install_team_provider()
+        install_team_summary(daily_summary)
+        install_team_store()
         install_common()
         install_store_safety()
         install(module)
@@ -84,6 +105,7 @@ def install_api_module(module: Any, route_name: str) -> Any:
         # add robust historical source recovery, then apply a last-resort known-major
         # backfill so a completed major final cannot disappear from the menu.
         install_day_validation(module)
+        install_team_validation()
         install_menu_history(module)
         install_known_major_backfill(module)
         _INSTALLED.add("webhook")
