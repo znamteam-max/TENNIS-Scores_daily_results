@@ -201,6 +201,12 @@ def _is_interrupted_text(*parts: Any) -> bool:
 def _ranked_status(category: str, tournament: str, season: str) -> tuple[str, int]:
     category = (category or "Other").strip()
     hay = _lower(category, tournament, season).replace("ё", "е")
+    if any(x in hay for x in ("davis cup", "кубок дэвиса", "copa davis")):
+        return "Кубок Дэвиса", 0
+    if any(x in hay for x in ("atp finals", "итоговый турнир atp")):
+        return "ATP Finals", 0
+    if any(x in hay for x in ("wta finals", "итоговый турнир wta")):
+        return "WTA Finals", 0
     if category == "ITF" or "itf" in hay or any(x in hay for x in ("m15", "m25", "m35", "m50", "w15", "w25", "w35", "w50", "w75", "w100")):
         marker = ""
         for token in ("M15", "M25", "M35", "M50", "W15", "W25", "W35", "W50", "W75", "W100"):
