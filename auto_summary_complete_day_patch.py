@@ -19,7 +19,7 @@ def _status_rank(event: Dict[str, Any]) -> int:
         "finished": 6,
         "retired": 6,
         "walkover": 6,
-        "cancelled": 6,
+        "cancelled": 5,
         "interrupted": 4,
         "inprogress": 3,
         "notstarted": 2,
@@ -41,10 +41,7 @@ def _merged_cached_events(source_day: dt.date, current_events: List[Dict[str, An
             if old is None or _status_rank(row) >= _status_rank(old):
                 by_id[event_id] = copy.deepcopy(row)
 
-    # Current poll snapshot is authoritative for its source date.
     add(current_events)
-    # A tournament game day can cross the source calendar boundary. Merge nearby
-    # cached source days before deciding whether an automatic summary is complete.
     for offset in (-2, -1, 0, 1, 2):
         day = source_day + dt.timedelta(days=offset)
         try:
@@ -52,7 +49,15 @@ def _merged_cached_events(source_day: dt.date, current_events: List[Dict[str, An
             add(ss.normalize_events(data))
         except Exception as exc:
             print(f"[summary-safe] cache read failed day={day}: {exc}")
-    return list(by_id.values())
+
+    rows = list(by_id.values())
+    try:
+        apply_team_context = getattr(ss, "apply_team_context", None)
+        if callable(apply_team_context):
+            rows = list(apply_team_context(rows))
+    except Exception as exc:
+        print(f"[summary-safe] team context failed: {exc}")
+    return rows
 
 
 def _profiled_event(event: Dict[str, Any]) -> tuple[Dict[str, Any], dt.date, Dict[str, Any]] | None:
@@ -66,10 +71,25 @@ def _profiled_event(event: Dict[str, Any]) -> tuple[Dict[str, Any], dt.date, Dic
     source = str(event.get("tournament_source_name") or event.get("tournament_name") or "")
     if not source:
         return None
-    profile = store.get_profile(source)
+    base_profile = store.get_profile(source)
+
+    # Distributed team events (Davis Cup) have one source tournament but many
+    # venues/timezones. Normal tournaments continue to use their saved profile.
+    team_event = bool(event.get("team_event"))
+    timezone_name = (
+        str(event.get("tournament_timezone") or "")
+        if team_event
+        else str(base_profile.get("tz") or store.DEFAULT_TZ)
+    )
+    if not timezone_name:
+        timezone_name = str(base_profile.get("tz") or store.DEFAULT_TZ)
     try:
-        timezone = ZoneInfo(str(profile.get("tz") or store.DEFAULT_TZ))
-        cutoff = int(profile.get("cutoff", store.DEFAULT_CUTOFF))
+        cutoff = int(
+            event.get("tournament_cutoff_minutes", base_profile.get("cutoff", store.DEFAULT_CUTOFF))
+            if team_event
+            else base_profile.get("cutoff", store.DEFAULT_CUTOFF)
+        )
+        timezone = ZoneInfo(timezone_name)
         local_start = dt.datetime.fromtimestamp(timestamp, timezone)
         game_day = (local_start - dt.timedelta(minutes=cutoff)).date()
     except Exception:
@@ -77,10 +97,18 @@ def _profiled_event(event: Dict[str, Any]) -> tuple[Dict[str, Any], dt.date, Dic
 
     row = copy.deepcopy(event)
     row["tournament_source_name"] = source
-    row["tournament_name"] = str(profile.get("name") or source)
-    row["tournament_timezone"] = str(profile.get("tz") or store.DEFAULT_TZ)
+    row["tournament_name"] = (
+        str(event.get("tournament_name") or source)
+        if team_event
+        else str(base_profile.get("name") or source)
+    )
+    row["tournament_timezone"] = timezone_name
     row["tournament_cutoff_minutes"] = cutoff
     row["session_day"] = game_day.isoformat()
+
+    profile = dict(base_profile)
+    profile["tz"] = timezone_name
+    profile["cutoff"] = cutoff
     return row, game_day, profile
 
 
@@ -114,13 +142,22 @@ def install(daily_summary: Any) -> None:
 
     daily_summary._summary_approval_text = approval_text
 
+    def result_ready(event: Dict[str, Any]) -> bool:
+        # "cancelled" used to count as finished, which allowed prompts like 5/13.
+        # Automatic summaries are now allowed only for rows that have an actual
+        # winner and a complete score line. Manual /summary remains the force path.
+        try:
+            return bool(ss.has_result_winner(event) and daily_summary._result_line(event))
+        except Exception:
+            return False
+
     def publish_complete_days(source_day, events, bot_token, chat_id):
         if not daily_summary.enabled() or not bot_token or not chat_id:
             return 0
 
         merged = _merged_cached_events(source_day, list(events or []))
         grouped: Dict[tuple[dt.date, str, str, str], List[Dict[str, Any]]] = defaultdict(list)
-        profiles: Dict[tuple[dt.date, str, str, str], Dict[str, Any]] = {}
+        profiles: Dict[tuple[dt.date, str, str, str], List[Dict[str, Any]]] = defaultdict(list)
 
         for event in merged:
             if not daily_summary._is_target_event(event, automatic=True):
@@ -136,20 +173,18 @@ def install(daily_summary: Any) -> None:
                 str(row.get("tournament_status") or ""),
             )
             grouped[key].append(row)
-            profiles[key] = profile
+            profiles[key].append(profile)
 
         sent = 0
         for key, rows in grouped.items():
             game_day, group, tournament, status = key
-            profile = profiles[key]
 
-            # Never offer a partial/"almost finished" day. We wait until the
-            # tournament-local game-day window itself is closed first.
-            if not _session_closed(game_day, profile):
+            # A distributed competition can have several venue timezones in the
+            # same "tournament" bucket. Do not close the day until every local
+            # venue window belonging to that game day is closed.
+            if not profiles[key] or not all(_session_closed(game_day, profile) for profile in profiles[key]):
                 continue
 
-            # Deduplicate once more inside the tournament day and use the most
-            # advanced source status for each event.
             by_id: Dict[int, Dict[str, Any]] = {}
             for row in rows:
                 event_id = int(row.get("event_id") or 0)
@@ -160,16 +195,17 @@ def install(daily_summary: Any) -> None:
             if not complete_rows:
                 continue
 
-            unfinished = [row for row in complete_rows if not ss.is_finished(row)]
+            unfinished = [row for row in complete_rows if not result_ready(row)]
             if unfinished:
+                ready = len(complete_rows) - len(unfinished)
                 print(
                     f"[summary-safe] skip incomplete day={game_day} tournament={tournament} "
-                    f"finished={len(complete_rows)-len(unfinished)}/{len(complete_rows)}"
+                    f"result_ready={ready}/{len(complete_rows)}"
                 )
                 continue
 
-            # The legacy publisher is now safe because it receives exactly one
-            # complete tournament game day, not a Flashscore calendar-day slice.
+            # At this point the legacy publisher receives only real result rows.
+            # Therefore its approval text can only be N/N, never 5/13 or 7/13.
             sent += int(old_publish(game_day, complete_rows, bot_token, chat_id) or 0)
 
         return sent
