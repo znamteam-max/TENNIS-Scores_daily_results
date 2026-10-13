@@ -1,7 +1,8 @@
 name = "tennis-daily-results"
+account_id = "f7f0376bf1c44c4e3cef4a24adf1b66a"
 main = "src/index.js"
 compatibility_date = "2025-05-08"
 compatibility_flags = ["nodejs_compat"]
 
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["*/15 * * * *"]

@@ -22,7 +22,7 @@ Routes:
 Example Browser Source URL:
 
 ```text
-https://tennis-daily-results.znamteam-903.workers.dev/overlay.html?source=/api/match/flashscore?id=Sril3X2m&news=/api/news/tennis&panel=stats&poll=3000
+https://tennis-daily-results.rngn.workers.dev/overlay.html?source=/api/match/flashscore?id=Sril3X2m&news=/api/news/tennis&panel=stats&poll=3000
 ```
 
 Use `panel=chat` to switch the left panel to chat mode. Add `guides=1` for layout guides while setting up a scene.
