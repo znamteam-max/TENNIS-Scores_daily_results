@@ -226,6 +226,9 @@ def _latin_to_ru(text: str) -> str:
     return "".join(out)
 
 
+NAME_PARTICLES = {"de", "del", "da", "di", "du", "van", "von", "der", "la", "le", "де", "ван", "фон", "дер"}
+
+
 def _surname(name: str) -> str:
     raw = " ".join(str(name or "TBD").replace(",", " ").split())
     if "/" in raw:
@@ -234,7 +237,11 @@ def _surname(name: str) -> str:
     if len(parts) > 1 and len(parts[-1].replace(".", "")) == 1:
         surname = " ".join(parts[:-1])
     else:
-        surname = parts[-1] if parts else "TBD"
+        # Keep particles with the surname: "Де Минор" -> "ДЕ МИНОР", not "МИНОР".
+        start = max(len(parts) - 1, 0)
+        while start > 0 and parts[start - 1].lower() in NAME_PARTICLES:
+            start -= 1
+        surname = " ".join(parts[start:]) if parts else "TBD"
     if not _has_cyrillic(surname):
         surname = _latin_to_ru(surname)
     return surname.upper()
